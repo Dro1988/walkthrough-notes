@@ -3,6 +3,18 @@
 <head>
 <script>
 window.__wtnErrors = [];
+(function () {
+  var origLog = console.log;
+  console.log = function () {
+    var msg = Array.prototype.map.call(arguments, String).join(' ');
+    if (/ops\.js failed|sync\.js failed|login\.js failed/i.test(msg)) {
+      window.__wtnErrors.push('CONSOLE: ' + msg);
+      var d = document.getElementById('wtnErrBox');
+      if (d) { d.style.display = 'block'; d.innerHTML = window.__wtnErrors.map(function(x){return '<div>'+x+'</div>'}).join(''); }
+    }
+    return origLog.apply(console, arguments);
+  };
+})();
 window.addEventListener('error', function (e) {
   window.__wtnErrors.push('ERROR: ' + (e.message || e.type) + ' @' + (e.lineno || '?'));
   var d = document.getElementById('wtnErrBox');
