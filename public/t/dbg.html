@@ -3,18 +3,6 @@
 <head>
 <script>
 window.__wtnErrors = [];
-(function () {
-  var origLog = console.log;
-  console.log = function () {
-    var msg = Array.prototype.map.call(arguments, String).join(' ');
-    if (/ops\.js failed|sync\.js failed|login\.js failed/i.test(msg)) {
-      window.__wtnErrors.push('CONSOLE: ' + msg);
-      var d = document.getElementById('wtnErrBox');
-      if (d) { d.style.display = 'block'; d.innerHTML = window.__wtnErrors.map(function(x){return '<div>'+x+'</div>'}).join(''); }
-    }
-    return origLog.apply(console, arguments);
-  };
-})();
 window.addEventListener('error', function (e) {
   window.__wtnErrors.push('ERROR: ' + (e.message || e.type) + ' @' + (e.lineno || '?'));
   var d = document.getElementById('wtnErrBox');
@@ -37,7 +25,6 @@ document.addEventListener('DOMContentLoaded', function () {
   }, 3000);
 });
 </script>
-
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
@@ -1579,6 +1566,11 @@ appendTranscript = function (text) {
 };
 
 /* ============================== init ============================== */
+/* Shared with sync.js + login.js across script scopes */
+window.wtnCard = wtnCard;
+window.logActivity = logActivity;
+window.wtnRenderErr = wtnRenderErr;
+window.showTab = showTab;
 injectLocationSelect();
 injectRatings();
 Store.init().then(function () {
@@ -1624,7 +1616,7 @@ var Sync = {
       return syncEnsureVisitForm();
     }).then(function () {
       Sync.save();
-      logActivity('sync', 'Server linked: ' + url);
+      if (window.logActivity) window.logActivity('sync', 'Server linked: ' + url);
     });
   },
   api: async function (method, path, body) {
@@ -1722,7 +1714,7 @@ async function syncFlush() {
   }
   syncQueueSave(rest);
   toast(ok ? ('Synced ' + ok + ' visit(s)' + (rest.length ? ', ' + rest.length + ' still pending' : '')) : 'Sync failed — will retry later');
-  logActivity('sync', 'Sync: ' + ok + ' visit(s) pushed' + (rest.length ? ', ' + rest.length + ' pending' : ''));
+  (window.logActivity||function(){})('sync', 'Sync: ' + ok + ' visit(s) pushed' + (rest.length ? ', ' + rest.length + ' pending' : ''));
   renderSyncCard();
 }
 
@@ -1730,9 +1722,9 @@ async function syncFlush() {
 window.__wtnVisitSynced = function (rec) {
   if (!Sync.connected()) return;
   syncPushVisit(rec).then(function () {
-    logActivity('sync', 'Visit pushed to server' + (rec.location ? ' (' + rec.location + ')' : ''));
+    (window.logActivity||function(){})('sync', 'Visit pushed to server' + (rec.location ? ' (' + rec.location + ')' : ''));
   }).catch(function (e) {
-    if (!e.auth) logActivity('sync', 'Visit queued — will push when the server is reachable');
+    if (!e.auth) (window.logActivity||function(){})('sync', 'Visit queued — will push when the server is reachable');
     else { toast('Server login expired — reconnect in More > Server link'); Sync.cfg.token = null; Sync.save(); renderSyncCard(); }
   });
 };
@@ -1740,6 +1732,8 @@ window.__wtnVisitSynced = function (rec) {
 /* ---------- server link card (More tab) ---------- */
 function renderSyncInto(elm) {
   if (!elm) return;
+  var wtnCard = window.wtnCard || function (t, i) { return '<div><h3>' + t + '</h3>' + i + '</div>'; };
+  var logActivity = window.logActivity || function () {};
   var c = Sync.cfg;
   var body;
   if (Sync.connected()) {
@@ -1775,7 +1769,7 @@ function renderSyncInto(elm) {
   if (off) off.addEventListener('click', function () {
     if (!window.confirm('Disconnect from the server? Synced visits stay on the dashboard.')) return;
     Sync.clear();
-    logActivity('sync', 'Server disconnected');
+    (window.logActivity||function(){})('sync', 'Server disconnected');
     renderSyncInto(elm);
   });
 }
@@ -1789,6 +1783,7 @@ var wtnAuditAnswers = {};
 var wtnAuditLoc = '';
 
 function renderAudits() {
+  var wtnCard = window.wtnCard || function (t, i) { return '<div><h3>' + t + '</h3>' + i + '</div>'; };
   var w = document.getElementById('wtnWrap-audits');
   if (!Sync.connected()) {
     w.innerHTML = '<div class="wtnHead"><h2>Audits</h2></div>' +
