@@ -655,16 +655,20 @@ var Store = (function () {
   }
   function init() {
     dbp = new Promise(function (res) {
+      var done = false;
+      function ok(v) { if (!done) { done = true; res(v); } }
+      setTimeout(function () { ok(null); }, 5000); // never hang the app on IndexedDB
       try {
-        if (!('indexedDB' in window)) return res(null);
+        if (!('indexedDB' in window)) return ok(null);
         var rq = indexedDB.open('wtnOps', 1);
         rq.onupgradeneeded = function (e) {
           var d = e.target.result;
           TABLES.forEach(function (s) { if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: 'id' }); });
         };
-        rq.onsuccess = function (e) { useIdb = true; res(e.target.result); };
-        rq.onerror = function () { res(null); };
-      } catch (e) { res(null); }
+        rq.onsuccess = function (e) { useIdb = true; ok(e.target.result); };
+        rq.onerror = function () { ok(null); };
+        rq.onblocked = function () { ok(null); };
+      } catch (e) { ok(null); }
     });
     return dbp;
   }
@@ -821,6 +825,7 @@ document.head.appendChild(stEl);
 
 /* ============================== app shell ============================== */
 var wtnTab = 'home';
+window.wtnTab = wtnTab; // sync.js reads the active tab off window
 var currentLocationId = null;
 var wtnRatings = {}; // section -> 'good'|'attention'|'critical'
 window.__wtnRatings = wtnRatings;
@@ -832,8 +837,8 @@ window.__wtnRatings = wtnRatings;
   while (document.body.firstChild) visit.appendChild(document.body.firstChild);
   document.body.appendChild(visit);
 
-  var views = { home: 'Home', visit: 'Visit', tasks: 'Tasks', lists: 'Lists', more: 'More' };
-  var icons = { home: '⌂', visit: '🎙', tasks: '✓', lists: '☰', more: '⋯' };
+  var views = { home: 'Home', visit: 'Visit', tasks: 'Tasks', lists: 'Lists', audits: 'Audits', more: 'More' };
+  var icons = { home: '⌂', visit: '🎙', tasks: '✓', lists: '☰', audits: '📋', more: '⋯' };
   Object.keys(views).forEach(function (k) {
     if (k === 'visit') return;
     var v = document.createElement('div');
@@ -858,8 +863,8 @@ window.__wtnRatings = wtnRatings;
 })();
 
 function showTab(k) {
-  wtnTab = k;
-  ['home', 'visit', 'tasks', 'lists', 'more'].forEach(function (t) {
+  wtnTab = k; window.wtnTab = k;
+  ['home', 'visit', 'tasks', 'lists', 'audits', 'more'].forEach(function (t) {
     var v = document.getElementById('wtnView-' + t);
     if (v) v.classList.toggle('on', t === k);
   });
@@ -869,6 +874,7 @@ function showTab(k) {
   if (k === 'home') renderHome();
   if (k === 'tasks') renderTasks();
   if (k === 'lists') renderLists();
+  if (k === 'audits' && typeof renderAudits === 'function') renderAudits();
   if (k === 'more') renderMore();
   window.scrollTo(0, 0);
 }
@@ -876,6 +882,24 @@ function showTab(k) {
 function wtnCard(title, inner) {
   return '<div class="wtnCard"><h3>' + wtnEsc(title) + '</h3>' + inner + '</div>';
 }
+function wtnRenderErr(w, e) {
+  try {
+    if (!w) return;
+    w.innerHTML = '<div class="wtnCard"><h3>Couldn\'t load this tab</h3>' +
+      '<div class="wtnMuted">' + wtnEsc((e && e.message) || String(e)) + '</div>' +
+      '<div style="height:10px"></div><button class="wtnBtn sm" id="wtnReloadApp">Reload app</button></div>';
+    var b = document.getElementById('wtnReloadApp');
+    if (b) b.addEventListener('click', function () { location.reload(); });
+  } catch (e2) {}
+}
+/* No more silent blank tabs: any unhandled render failure shows its message
+   in the active tab instead of an empty screen. */
+window.addEventListener('unhandledrejection', function (e) {
+  try {
+    var w = document.querySelector('.wtnView.on .wtnWrap');
+    if (w && !w.innerHTML.trim()) wtnRenderErr(w, (e && e.reason) || e);
+  } catch (e2) {}
+});
 
 /* ============================== home dashboard ============================== */
 function renderHome() {
@@ -925,7 +949,7 @@ function renderHome() {
     document.getElementById('wtnGoVisit').addEventListener('click', function () { showTab('visit'); });
     document.getElementById('wtnGoTask').addEventListener('click', function () { showTab('tasks'); setTimeout(function(){ var f = document.getElementById('wtnTaskTitle'); if (f) f.focus(); }, 50); });
     document.getElementById('wtnGoList').addEventListener('click', function () { showTab('lists'); });
-  });
+  }).catch(function (e) { wtnRenderErr(w, e); });
 }
 
 /* ============================== tasks ============================== */
@@ -1296,6 +1320,7 @@ function renderMore() {
   var w = document.getElementById('wtnWrap-more');
   w.innerHTML =
     '<div class="wtnHead"><h2>More</h2></div>' +
+    '<div id="wtnMoreSync"></div>' +
     '<div id="wtnMorePlaces"></div>' +
     '<div class="wtnCard"><h3>Visit history</h3><div id="wtnHistList"></div></div>' +
     '<div class="wtnCard"><h3>Activity</h3><div id="wtnActList"></div></div>' +
@@ -1307,6 +1332,7 @@ function renderMore() {
     '<div class="wtnCard"><h3>AI summarize</h3><div class="wtnMuted" style="margin-bottom:8px">Your Groq key stays on this phone and is only used when you tap AI summarize.</div>' +
     '<button class="wtnBtn sm ghost" id="wtnAiSettings">Groq key settings</button></div>';
   renderPlacesInto(document.getElementById('wtnMorePlaces'));
+  if (typeof renderSyncInto === 'function') renderSyncInto(document.getElementById('wtnMoreSync'));
   renderHistoryInto(document.getElementById('wtnHistList'));
   renderActivityInto(document.getElementById('wtnActList'));
   document.getElementById('wtnAiSettings').addEventListener('click', function () { var s = el('settingsOpen'); if (s) s.click(); });
@@ -1492,6 +1518,7 @@ function saveVisitRecord(draft) {
   };
   Store.put('visits', rec).then(function () {
     logActivity('visit', 'Visit finalized' + (rec.location ? ' at ' + rec.location : ''));
+    if (typeof window.__wtnVisitSynced === 'function') { try { window.__wtnVisitSynced(rec); } catch (e) {} }
   });
 }
 
