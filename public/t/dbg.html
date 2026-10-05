@@ -260,6 +260,30 @@ document.addEventListener('DOMContentLoaded', function () {
       .draft-panel { border: 0; box-shadow: none; padding: 0; }
     }
   </style>
+<script>
+window.__wtnDiag = function () {
+  var out = [];
+  out.push('t=' + Math.round(performance.now()) + 'ms');
+  out.push('typeof Sync=' + typeof Sync);
+  try { out.push('Sync.connected=' + (typeof Sync !== 'undefined' && Sync.connected())); } catch (e) { out.push('Sync.connected ERR'); }
+  try { out.push('offline-ok=' + localStorage.getItem('wtn-offline-ok')); } catch (e) { out.push('ls ERR'); }
+  out.push('typeof LoginGate=' + typeof LoginGate);
+  try { out.push('gate el=' + (typeof LoginGate !== 'undefined' && !!LoginGate.el)); } catch (e) {}
+  out.push('gate div in DOM=' + !!document.getElementById('wtnLoginGate'));
+  out.push('nav buttons=' + document.querySelectorAll('#wtnNav button').length);
+  out.push('home HTML len=' + (document.getElementById('wtnWrap-home') ? document.getElementById('wtnWrap-home').innerHTML.length : 'NO EL'));
+  out.push('wtnView-visit count=' + document.querySelectorAll('#wtnView-visit').length);
+  return out.join(' | ');
+};
+[2000, 5000, 10000].forEach(function (ms) {
+  setTimeout(function () {
+    var msg = 'DIAG: ' + window.__wtnDiag();
+    window.__wtnErrors.push(msg);
+    var d = document.getElementById('wtnErrBox');
+    if (d) { d.style.display = 'block'; d.innerHTML = window.__wtnErrors.map(function(x){return '<div>'+x+'</div>'}).join(''); }
+  }, ms);
+});
+</script>
 </head>
 <body>
   <main class="app">
