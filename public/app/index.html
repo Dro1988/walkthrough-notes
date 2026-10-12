@@ -60,6 +60,10 @@
       width: min(1120px, 100%);
       margin: 0 auto;
       padding: 22px clamp(16px, 4vw, 36px) 110px;
+      /* Keep the header clear of the status bar/notch when the page runs
+         edge-to-edge (installed PWA, viewport-fit=cover). 0px in a normal
+         browser tab and inside the APK, where the native shell pads instead. */
+      padding-top: calc(22px + env(safe-area-inset-top, 0px));
     }
     .topline {
       display: flex;
@@ -216,7 +220,7 @@
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
 
     @media (max-width: 760px) {
-      .app { padding-top: 16px; }
+      .app { padding-top: calc(16px + env(safe-area-inset-top, 0px)); }
       .workspace { grid-template-columns: 1fr; }
       .recorder { grid-template-columns: 1fr; text-align: center; justify-items: center; }
       .recorder-copy { display: grid; justify-items: center; }
@@ -823,7 +827,7 @@ function wtnPrioLabel(k) {
 var opsCss = [
   '#wtnOps{position:fixed;inset:0;background:#f2f4f1;z-index:9000;display:none;flex-direction:column}',
   '#wtnOps.open{display:flex}',
-  '#wtnOpsHead{background:#175f43;color:#fff;padding:12px 16px;font-weight:700;font-size:17px;display:flex;align-items:center;justify-content:space-between;flex:none}',
+  '#wtnOpsHead{background:#175f43;color:#fff;padding:12px 16px;padding-top:calc(12px + env(safe-area-inset-top,0px));font-weight:700;font-size:17px;display:flex;align-items:center;justify-content:space-between;flex:none}',
   '#wtnOpsBody{flex:1;overflow-y:auto;padding:14px 14px 100px;-webkit-overflow-scrolling:touch}',
   '.wtnView{display:block}',
   '.wtnWrap{max-width:860px;margin:0 auto}',
