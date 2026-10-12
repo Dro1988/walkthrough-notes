@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
   <link rel="icon" href="data:," />
-  <title>Walkthrough Notes</title>
+  <title>SiteWalkNotes</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;700&display=swap');
 
@@ -333,6 +333,17 @@
    SpeechRecognizer via the NativeSpeech JavascriptInterface, and routes
    the photo button through the native camera/gallery picker
    (window.NativePhoto) instead of the fragile WebView file chooser. */
+/* PRODUCTION error collector: silent (console + in-memory only, no visible overlay) */
+(function () {
+  window.__wtnErrors = [];
+  window.wtnTrace = function (msg) { try { console.log('[wtn] ' + msg); } catch (e) {} };
+  window.addEventListener('error', function (e) {
+    window.__wtnErrors.push('Error: ' + (e.message || 'unknown') + ' @' + (e.lineno || '?'));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    window.__wtnErrors.push('Rejection: ' + ((e.reason && e.reason.message) || e.reason || 'unknown'));
+  });
+})();
 (function () {
   if (!window.NativeSpeech) return;
 
@@ -503,7 +514,9 @@ window.setTimeout(function () {
       var _vv = "?";
       try { if (window.NativeSpeech && window.NativeSpeech.getAppVersion) _vv = window.NativeSpeech.getAppVersion(); } catch (e0) {}
       _vb.textContent = "v" + _vv;
-      _vb.style.cssText = "position:fixed;right:10px;bottom:10px;font-size:11px;color:#8a978d;background:rgba(255,255,255,.9);padding:3px 8px;border-radius:8px;z-index:9999;pointer-events:none;";
+      _vb.style.cssText = "position:fixed;right:10px;bottom:10px;font-size:11px;color:#8a978d;background:rgba(255,255,255,.9);padding:8px 12px;border-radius:8px;z-index:9999;cursor:pointer;";
+      _vb.title = "Tap for diagnostics";
+      _vb.addEventListener('click', function () { if (window.wtnShowDiagnostics) window.wtnShowDiagnostics(); });
       document.body.appendChild(_vb);
     } catch (e1) {}
 
@@ -614,53 +627,46 @@ window.setTimeout(function () {
 }, 0);
 
 /* ---- Walkthrough Ops expansion (build-injected) ---- */
-/* Walkthrough Ops expansion (build-injected, v1.6).
-   Zenput-style ops features for a single operator, 100% on-device:
-   Home dashboard, Tasks (+voice capture), Recurring checklists, Places,
-   visit History, Activity feed, Backup/restore, per-section condition ratings.
-   Runs inside the page scope (same trick as autosave.js) so it can integrate
-   with dictation, drafts and the report builder. */
+/* Walkthrough Ops v5.0 — clean rebuild.
+   Architecture: the original visit page is NEVER touched. All ops UI lives in
+   a fixed full-screen overlay (#wtnOps) with its own sections. The bottom nav
+   switches between the untouched Visit page and the overlay sections.
+   - Tasks: simple add/list/done/delete, stored in IndexedDB
+   - Lists: simple checklist templates, stored in IndexedDB
+   - Audits: published console forms, fillable; submissions stored locally AND pushed
+   - More: server link, sync, activity
+*/
 window.setTimeout(function () {
 try {
 
 /* ============================== utils ============================== */
 function wtnUid(p) { return (p || 'x') + Date.now().toString(36) + Math.floor(Math.random() * 9999); }
-function wtnToday() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
-function wtnEsc(s) { return escapeHtml(s); }
-function wtnFmtDate(iso) {
-  if (!iso) return '';
-  var p = iso.split('-'); if (p.length < 3) return iso;
-  return p[1].replace(/^0/, '') + '/' + p[2].replace(/^0/, '') + '/' + p[0];
+window.wtnUid = window.wtnUid || wtnUid;
+function wtnEsc(s) {
+  try {
+    if (window.escapeHtml) return escapeHtml(String(s == null ? '' : s));
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  } catch (e) { return String(s); }
 }
-function wtnWeekStart() { var d = new Date(); var day = (d.getDay() + 6) % 7; d.setDate(d.getDate() - day); d.setHours(0,0,0,0); return d.getTime(); }
+window.wtnEsc = window.wtnEsc || wtnEsc;
 
 /* ============================== storage ============================== */
-/* IndexedDB primary, localStorage fallback (photos excluded from the fallback on quota). */
 var Store = (function () {
-  var LSKEY = 'wtn-ops-ls', useIdb = false, dbp = null;
-  var TABLES = ['locations', 'tasks', 'templates', 'instances', 'visits', 'activity'];
+  var LSKEY = 'wtn-ops-v5', useIdb = false, dbp = null;
+  var TABLES = ['tasks', 'templates', 'instances', 'submissions', 'activity', 'people', 'crews', 'locations', 'visits'];
   function lsRead() { try { return JSON.parse(localStorage.getItem(LSKEY) || '{}'); } catch (e) { return {}; } }
-  function stripPhotos(o) {
-    try {
-      if (o.visits) Object.keys(o.visits).forEach(function (id) {
-        var v = o.visits[id];
-        if (v && v.photos) v.photos = v.photos.map(function (p) { return { section: p.section, name: p.name, note: 'photo excluded from backup' }; });
-      });
-    } catch (e) {}
-    return o;
-  }
-  function lsWrite(o) {
-    try { localStorage.setItem(LSKEY, JSON.stringify(o)); }
-    catch (e) { try { localStorage.setItem(LSKEY, JSON.stringify(stripPhotos(o))); } catch (e2) {} }
-  }
+  function lsWrite(o) { try { localStorage.setItem(LSKEY, JSON.stringify(o)); } catch (e) {} }
   function init() {
+    if (dbp) return dbp;
     dbp = new Promise(function (res) {
       var done = false;
       function ok(v) { if (!done) { done = true; res(v); } }
-      setTimeout(function () { ok(null); }, 5000); // never hang the app on IndexedDB
+      setTimeout(function () { ok(null); }, 5000);
       try {
         if (!('indexedDB' in window)) return ok(null);
-        var rq = indexedDB.open('wtnOps', 1);
+        var rq = indexedDB.open('wtnOps5', 1);
         rq.onupgradeneeded = function (e) {
           var d = e.target.result;
           TABLES.forEach(function (s) { if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: 'id' }); });
@@ -675,881 +681,872 @@ var Store = (function () {
   function idbReq(store, mode, fn) {
     return dbp.then(function (db) {
       return new Promise(function (res, rej) {
+        var settled = false;
         try {
+          if (!db) return rej(new Error('no db'));
           var tx = db.transaction(store, mode), os = tx.objectStore(store);
           var out = fn(os, tx);
-          tx.oncomplete = function () { res(out && out.value); };
-          tx.onerror = function () { rej(tx.error); };
-        } catch (e) { rej(e); }
+          tx.oncomplete = function () { if (!settled) { settled = true; res(out && out.value); } };
+          tx.onerror = function () { if (!settled) { settled = true; rej(tx.error || new Error('tx')); } };
+          tx.onabort = function () { if (!settled) { settled = true; rej(new Error('abort')); } };
+          setTimeout(function () { if (!settled) { settled = true; res(out && out.value); } }, 8000);
+        } catch (e) { if (!settled) { settled = true; rej(e); } }
       });
     });
   }
   function all(store) {
+    if (!dbp) init();
     return dbp.then(function () {
       if (!useIdb) {
-        var o = lsRead(); var t = o[store] || {};
+        var o = lsRead(), t = o[store] || {};
         return Object.keys(t).map(function (k) { return t[k]; });
       }
       return idbReq(store, 'readonly', function (os) {
         var holder = { value: [] };
-        if (os.getAll) {
+        try {
           var rq = os.getAll();
-          rq.onsuccess = function () { holder.value = rq.result || []; };
-        } else {
-          var cur = os.openCursor();
-          cur.onsuccess = function (e) { var c = e.target.result; if (c) { holder.value.push(c.value); c.continue(); } };
-        }
+          rq.onsuccess = function () { try { holder.value = Array.isArray(rq.result) ? rq.result : []; } catch (e) {} };
+          rq.onerror = function () {};
+        } catch (e) {}
         return holder;
-      }).then(function (h) { return h.value; });
-    });
+      }).then(function (h) { return Array.isArray(h) ? h : []; }, function () { return []; });
+    }).then(function (r) { return Array.isArray(r) ? r : []; }, function () { return []; });
   }
   function put(store, obj) {
+    if (!dbp) init();
     return dbp.then(function () {
       if (!useIdb) {
-        var o = lsRead(); o[store] = o[store] || {}; o[store][obj.id] = obj; lsWrite(o);
+        try { var o = lsRead(); o[store] = o[store] || {}; o[store][obj.id] = obj; lsWrite(o); } catch (e) {}
         return true;
       }
-      return idbReq(store, 'readwrite', function (os) { os.put(obj); return { value: true }; }).then(function () { return true; });
+      return idbReq(store, 'readwrite', function (os) { os.put(obj); return { value: true }; })
+        .then(function () { return true; }, function () {
+          try { var o2 = lsRead(); o2[store] = o2[store] || {}; o2[store][obj.id] = obj; lsWrite(o2); } catch (e2) {}
+          return true;
+        });
     });
   }
   function del(store, id) {
+    if (!dbp) init();
     return dbp.then(function () {
       if (!useIdb) {
-        var o = lsRead(); if (o[store]) delete o[store][id]; lsWrite(o);
+        try { var o = lsRead(); if (o[store]) delete o[store][id]; lsWrite(o); } catch (e) {}
         return true;
       }
-      return idbReq(store, 'readwrite', function (os) { os.delete(id); return { value: true }; }).then(function () { return true; });
+      return idbReq(store, 'readwrite', function (os) { os.delete(id); return { value: true }; })
+        .then(function () { return true; }, function () { return true; });
     });
   }
-  function clear(store) {
-    return dbp.then(function () {
-      if (!useIdb) {
-        var o = lsRead(); o[store] = {}; lsWrite(o);
-        return true;
-      }
-      return idbReq(store, 'readwrite', function (os) { os.clear(); return { value: true }; }).then(function () { return true; });
-    });
-  }
-  function dump() {
-    return dbp.then(function () {
-      if (!useIdb) return lsRead();
-      var out = {};
-      var chain = Promise.resolve();
-      TABLES.forEach(function (t) {
-        chain = chain.then(function () { return all(t).then(function (rows) { out[t] = {}; rows.forEach(function (r) { out[t][r.id] = r; }); }); });
-      });
-      return chain.then(function () { return out; });
-    });
-  }
-  return { init: init, all: all, put: put, del: del, clear: clear, dump: dump, stripPhotos: stripPhotos };
+  return { init: init, all: all, put: put, del: del };
 })();
+window.Store = Store;
 
 function logActivity(kind, text) {
-  Store.put('activity', { id: wtnUid('a'), ts: Date.now(), kind: kind, text: text }).then(function () {
-    Store.all('activity').then(function (rows) {
-      if (rows.length > 300) {
-        rows.sort(function (a, b) { return a.ts - b.ts; });
-        var drop = rows.slice(0, rows.length - 300);
-        (function next(i) { if (i >= drop.length) return; Store.del('activity', drop[i].id).then(function () { next(i + 1); }); })(0);
-      }
-    });
+  Store.put('activity', { id: wtnUid('a'), ts: Date.now(), kind: kind, text: text }).catch(function(){});
+}
+window.logActivity = window.logActivity || logActivity;
+
+/* ============================== toast ============================== */
+function toast(msg) {
+  try {
+    var d = document.getElementById('wtnToast');
+    if (!d) {
+      d = document.createElement('div');
+      d.id = 'wtnToast';
+      d.style.cssText = 'position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#1c2b24;color:#fff;padding:10px 18px;border-radius:24px;font-size:14px;z-index:10000002;opacity:0;transition:opacity .3s;pointer-events:none;max-width:90%;text-align:center;';
+      document.body.appendChild(d);
+    }
+    d.textContent = msg;
+    d.style.opacity = '1';
+    clearTimeout(d.__t);
+    d.__t = setTimeout(function(){ d.style.opacity = '0'; }, 2200);
+  } catch (e) {}
+}
+window.toast = window.toast || toast;
+
+/* ============================== locations & people ============================== */
+/* Locations: cached from server when linked, plus manual entries. */
+function wtnGetLocations() {
+  try { return JSON.parse(localStorage.getItem('wtn-locations') || '[]'); } catch (e) { return []; }
+}
+function wtnSetLocations(locs) {
+  try { localStorage.setItem('wtn-locations', JSON.stringify(locs || [])); } catch (e) {}
+}
+window.wtnGetLocations = wtnGetLocations;
+window.wtnSetLocations = wtnSetLocations;
+/* Pull from server when linked and cache */
+function wtnRefreshLocations() {
+  try {
+    if (window.Sync && Sync.connected()) {
+      Sync.api('GET', '/locations').then(function (locs) {
+        if (Array.isArray(locs) && locs.length) wtnSetLocations(locs.map(function (l) { return { id: l.id, name: l.name }; }));
+      }).catch(function () {});
+    }
+  } catch (e) {}
+}
+function wtnLocationOptions(selectedId) {
+  var locs = wtnGetLocations();
+  var html = '<option value="">— no location —</option>';
+  locs.forEach(function (l) {
+    html += '<option value="' + wtnEsc(l.id) + '"' + (String(l.id) === String(selectedId) ? ' selected' : '') + '>' + wtnEsc(l.name) + '</option>';
   });
-  if (typeof renderActivity === 'function') renderActivity();
+  return html;
+}
+function wtnLocationName(id) {
+  if (!id) return '';
+  var hit = wtnGetLocations().filter(function (l) { return String(l.id) === String(id); })[0];
+  return hit ? hit.name : '';
+}
+function wtnTodayStr() {
+  var d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function wtnIsOverdue(dueDate) {
+  if (!dueDate) return false;
+  return dueDate < wtnTodayStr();
+}
+function wtnIsDueToday(dueDate) {
+  return dueDate === wtnTodayStr();
+}
+var PRIOS = [
+  { k: 'low', label: 'Low' },
+  { k: 'normal', label: 'Normal' },
+  { k: 'high', label: 'High' },
+  { k: 'urgent', label: 'Urgent' }
+];
+function wtnPrioLabel(k) {
+  var p = PRIOS.filter(function (x) { return x.k === k; })[0];
+  return p ? p.label : 'Normal';
 }
 
 /* ============================== styles ============================== */
 var opsCss = [
-  '#wtnNav{position:fixed;left:0;right:0;bottom:0;z-index:5;display:flex;background:#fff;border-top:1px solid #d8ded8;padding:6px 4px calc(6px + env(safe-area-inset-bottom));box-shadow:0 -6px 24px rgba(25,42,31,.08)}',
-  '#wtnNav button{flex:1;border:0;background:none;font:600 11px/1.2 system-ui;color:#566259;padding:8px 2px;border-radius:10px;display:flex;flex-direction:column;align-items:center;gap:3px}',
-  '#wtnNav button .ic{font-size:19px;line-height:1}',
-  '#wtnNav button.on{color:#175f43;background:#dcece3}',
-  '.wtnView{display:none;padding-bottom:86px}',
-  '.wtnView.on{display:block}',
-  '.wtnWrap{max-width:860px;margin:0 auto;padding:14px 14px 0}',
-  '.wtnCard{background:#fff;border:1px solid #d8ded8;border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 8px 24px rgba(25,42,31,.06)}',
-  '.wtnCard h3{margin:0 0 8px;font-size:16px}',
-  '.wtnRow{display:flex;align-items:center;gap:10px}',
-  '.wtnGrow{flex:1}',
-  '.wtnMuted{color:#566259;font-size:13px}',
-  '.wtnInp,.wtnSel{width:100%;box-sizing:border-box;font:15px system-ui;padding:10px 12px;border:1px solid #d8ded8;border-radius:10px;background:#f6f8f5;color:#18211b}',
-  '.wtnInp:focus,.wtnSel:focus{outline:2px solid #175f43;border-color:#175f43;background:#fff}',
-  '.wtnBtn{border:0;border-radius:10px;background:#175f43;color:#fff;font:700 15px system-ui;padding:11px 16px}',
-  '.wtnBtn.ghost{background:#eef1ed;color:#175f43}',
-  '.wtnBtn.danger{background:#a1372e}',
-  '.wtnBtn.sm{font-size:13px;padding:8px 12px}',
-  '.wtnChips{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}',
-  '.wtnChip{border:1px solid #d8ded8;background:#f6f8f5;border-radius:999px;padding:7px 13px;font:600 13px system-ui;color:#566259}',
-  '.wtnChip.on{background:#175f43;border-color:#175f43;color:#fff}',
-  '.wtnTask{display:flex;gap:10px;align-items:flex-start;padding:11px 4px;border-top:1px solid #eef1ed}',
-  '.wtnTask:first-child{border-top:0}',
-  '.wtnCb{width:22px;height:22px;min-width:22px;border-radius:50%;border:2px solid #b9c4ba;margin-top:2px;background:#fff;padding:0}',
-  '.wtnCb.done{background:#175f43;border-color:#175f43;color:#fff;font-size:13px;line-height:1}',
-  '.wtnTaskTitle{font:600 15px system-ui}',
-  '.wtnTaskTitle.done{text-decoration:line-through;color:#8a978d}',
-  '.wtnBadge{display:inline-block;font:700 11px system-ui;padding:3px 9px;border-radius:999px;margin-top:4px;margin-right:6px}',
-  '.wtnBadge.over{background:#f8dedb;color:#a1372e}',
-  '.wtnBadge.today{background:#fff0ce;color:#9a5b00}',
-  '.wtnBadge.week{background:#dcece3;color:#175f43}',
-  '.wtnBadge.doneb{background:#eef1ed;color:#566259}',
-  '.wtnBadge.loc{background:#e8eefc;color:#2c4a8a}',
-  '.wtnStat{background:#fff;border:1px solid #d8ded8;border-radius:14px;padding:14px;text-align:center}',
-  '.wtnStat .n{font:700 26px system-ui;color:#18211b}',
-  '.wtnStat .l{font:600 12px system-ui;color:#566259;margin-top:2px}',
-  '.wtnGrid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}',
-  '.wtnBar{height:8px;border-radius:99px;background:#eef1ed;overflow:hidden;margin-top:8px}',
-  '.wtnBar>div{height:100%;background:#175f43;border-radius:99px}',
-  '.wtnItem{display:flex;gap:10px;align-items:center;padding:10px 4px;border-top:1px solid #eef1ed;font:15px system-ui}',
-  '.wtnItem:first-child{border-top:0}',
-  '.wtnItem .wtnGrow.done{color:#8a978d;text-decoration:line-through}',
-  '.wtnDayDots{display:flex;gap:6px;margin-top:8px}',
-  '.wtnDot{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:700 10px system-ui;background:#eef1ed;color:#8a978d}',
-  '.wtnDot.full{background:#175f43;color:#fff}',
-  '.wtnDot.part{background:#fff0ce;color:#9a5b00}',
-  '.wtnEmpty{text-align:center;color:#8a978d;padding:26px 10px;font-size:14px}',
-  '.wtnHead{display:flex;align-items:center;justify-content:space-between;margin:2px 2px 10px}',
-  '.wtnHead h2{margin:0;font-size:20px}',
-  '.wtnRateRow{display:flex;gap:8px;align-items:center;margin:8px 0 2px;flex-wrap:wrap}',
-  '.wtnRate{border:1px solid #d8ded8;background:#f6f8f5;border-radius:999px;padding:6px 12px;font:600 12px system-ui;color:#566259}',
-  '.wtnRate.on-g{background:#175f43;border-color:#175f43;color:#fff}',
-  '.wtnRate.on-a{background:#9a5b00;border-color:#9a5b00;color:#fff}',
-  '.wtnRate.on-c{background:#a1372e;border-color:#a1372e;color:#fff}',
-  '.wtnLbl{font:600 12px system-ui;color:#566259;margin:10px 0 4px}',
-  '.wtnAct{padding:9px 2px;border-top:1px solid #eef1ed;font-size:14px}',
-  '.wtnAct:first-child{border-top:0}',
-  '.wtnAct .t{color:#8a978d;font-size:12px}',
-  '#wtnVer{top:8px !important;bottom:auto !important}'
+  '#wtnOps{position:fixed;inset:0;background:#f2f4f1;z-index:9000;display:none;flex-direction:column}',
+  '#wtnOps.open{display:flex}',
+  '#wtnOpsHead{background:#175f43;color:#fff;padding:12px 16px;font-weight:700;font-size:17px;display:flex;align-items:center;justify-content:space-between;flex:none}',
+  '#wtnOpsBody{flex:1;overflow-y:auto;padding:14px 14px 100px;-webkit-overflow-scrolling:touch}',
+  '.wtnView{display:block}',
+  '.wtnWrap{max-width:860px;margin:0 auto}',
+  '.wtnHead{margin:4px 2px 12px}',
+  '.wtnHead h2{margin:0;font-size:22px;color:#1c2b24}',
+  '.wtnCard{background:#fff;border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}',
+  '.wtnLbl{font-size:13px;font-weight:600;color:#566259;margin-bottom:6px}',
+  '.wtnInp{width:100%;box-sizing:border-box;border:1px solid #d5ddd8;border-radius:10px;padding:10px 12px;font-size:15px;margin-bottom:4px;background:#fff}',
+  'textarea.wtnInp{resize:vertical}',
+  '.wtnBtn{display:inline-block;background:#175f43;color:#fff;border:0;border-radius:10px;padding:11px 16px;font-size:15px;font-weight:600;cursor:pointer}',
+  '.wtnBtn.ghost{background:#e8efe b}',
+  '.wtnBtn.ghost{background:#e8efeb;color:#175f43}',
+  '.wtnBtn.danger{background:#b3261e}',
+  '.wtnBtn.sm{padding:7px 10px;font-size:13px;border-radius:8px}',
+  '.wtnTask{display:flex;align-items:center;gap:10px;background:#fff;border-radius:12px;padding:12px;margin-bottom:8px;box-shadow:0 1px 2px rgba(0,0,0,.06)}',
+  '.wtnGrow{flex:1;min-width:0}',
+  '.wtnTaskTitle{font-weight:600;color:#1c2b24;word-break:break-word}',
+  '.wtnTaskTitle.done{text-decoration:line-through;color:#8a948e}',
+  '.wtnMuted{color:#8a948e;font-size:13px}',
+  '.wtnEmpty{text-align:center;color:#8a948e;padding:24px 12px}',
+  '#wtnNav{position:fixed;left:0;right:0;bottom:0;z-index:9500;background:#fff;border-top:1px solid #e2e8e4;display:flex;padding:8px 4px calc(8px + env(safe-area-inset-bottom))}',
+  '#wtnNav button{flex:1;border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11px;color:#566259;padding:6px 2px;border-radius:12px;cursor:pointer}',
+  '#wtnNav button.on{background:#dcece3;color:#175f43;font-weight:700}',
+  '#wtnNav .ico{font-size:20px;line-height:1}',
+  '#wtnVer{position:fixed;right:10px;bottom:86px;z-index:9600;background:rgba(20,30,25,.72);color:#fff;font-size:11px;padding:4px 10px;border-radius:12px;font-family:monospace}',
+  '.wtnBadge{display:inline-block;font-size:11px;font-weight:700;padding:3px 8px;border-radius:8px;background:#e8efeb;color:#566259;margin-right:4px}',
+  '.wtnBadge.overdue{background:#fdecea;color:#b3261e}',
+  '.wtnBadge.today{background:#fff4e0;color:#8a5a00}',
+  '.wtnBadge.prio{background:#e8e0f4;color:#5b3d99}',
+  '.wtnTask.overdueRow{border-left:4px solid #b3261e}',
+  '.wtnStat{background:#fff;border-radius:14px;padding:14px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.08)}',
+  '.wtnStatNum{font-size:26px;font-weight:800;color:#175f43}',
+  '.wtnStatLbl{font-size:12px;color:#566259;margin-top:2px}',
+  '.wtnLocRow{display:flex;align-items:center;gap:10px;background:#fff;border-radius:12px;padding:12px;margin-bottom:8px;box-shadow:0 1px 2px rgba(0,0,0,.06)}',
+  '.wtnBar{height:8px;background:#e8efeb;border-radius:4px;overflow:hidden;margin-top:6px}',
+  '.wtnBarFill{height:100%;background:#175f43;border-radius:4px}'
 ].join('\n');
-var stEl = document.createElement('style');
-stEl.textContent = opsCss;
-document.head.appendChild(stEl);
 
-/* ============================== app shell ============================== */
-var wtnTab = 'home';
-window.wtnTab = wtnTab; // sync.js reads the active tab off window
-var currentLocationId = null;
-var wtnRatings = {}; // section -> 'good'|'attention'|'critical'
-window.__wtnRatings = wtnRatings;
+/* ============================== shell ============================== */
+var wtnTab = 'visit';
+var SECTIONS = [
+  { k: 'visit', label: 'Visit', ico: '\uD83C\uDFA4' },
+  { k: 'home', label: 'Home', ico: '\u2302' },
+  { k: 'tasks', label: 'Tasks', ico: '\u2713' },
+  { k: 'lists', label: 'Lists', ico: '\u2630' },
+  { k: 'audits', label: 'Audits', ico: '\uD83D\uDCCB' },
+  { k: 'more', label: 'More', ico: '\u22EF' }
+];
 
-(function buildShell() {
-  var visit = document.createElement('div');
-  visit.id = 'wtnView-visit';
-  visit.className = 'wtnView';
-  while (document.body.firstChild) visit.appendChild(document.body.firstChild);
-  document.body.appendChild(visit);
+function buildShell() {
+  // CSS
+  var st = document.createElement('style');
+  st.textContent = opsCss;
+  document.head.appendChild(st);
 
-  var views = { home: 'Home', visit: 'Visit', tasks: 'Tasks', lists: 'Lists', audits: 'Audits', more: 'More' };
-  var icons = { home: '⌂', visit: '🎙', tasks: '✓', lists: '☰', audits: '📋', more: '⋯' };
-  Object.keys(views).forEach(function (k) {
-    if (k === 'visit') return;
-    var v = document.createElement('div');
-    v.id = 'wtnView-' + k;
-    v.className = 'wtnView';
-    v.innerHTML = '<div class="wtnWrap" id="wtnWrap-' + k + '"></div>';
-    document.body.appendChild(v);
-  });
-  // visit view also gets the wrap treatment for consistent padding
-  visit.classList.add('wtnWrap');
+  // Overlay (my DOM — the original page is never touched)
+  var ops = document.createElement('div');
+  ops.id = 'wtnOps';
+  ops.innerHTML =
+    '<div id="wtnOpsHead"><span id="wtnOpsTitle">Tasks</span></div>' +
+    '<div id="wtnOpsBody">' +
+    '<div class="wtnView" id="wtnView-home" style="display:none"><div class="wtnWrap" id="wtnWrap-home"></div></div>' +
+    '<div class="wtnView" id="wtnView-tasks"><div class="wtnWrap" id="wtnWrap-tasks"></div></div>' +
+    '<div class="wtnView" id="wtnView-lists" style="display:none"><div class="wtnWrap" id="wtnWrap-lists"></div></div>' +
+    '<div class="wtnView" id="wtnView-audits" style="display:none"><div class="wtnWrap" id="wtnWrap-audits"></div></div>' +
+    '<div class="wtnView" id="wtnView-more" style="display:none"><div class="wtnWrap" id="wtnWrap-more"></div></div>' +
+    '</div>';
+  document.body.appendChild(ops);
 
+  // Bottom nav
   var nav = document.createElement('nav');
   nav.id = 'wtnNav';
-  Object.keys(views).forEach(function (k) {
+  SECTIONS.forEach(function (s) {
     var b = document.createElement('button');
-    b.innerHTML = '<span class="ic">' + icons[k] + '</span>' + views[k];
-    b.setAttribute('data-tab', k);
-    b.addEventListener('click', function () { showTab(k); });
+    b.innerHTML = '<span class="ico">' + s.ico + '</span><span>' + s.label + '</span>';
+    b.setAttribute('data-tab', s.k);
+    if (s.k === 'visit') b.classList.add('on');
+    b.addEventListener('click', function () { showTab(s.k); });
     nav.appendChild(b);
   });
   document.body.appendChild(nav);
-})();
+
+  // Version badge
+  var ver = document.createElement('div');
+  ver.id = 'wtnVer';
+  ver.textContent = 'v5.3';
+  document.body.appendChild(ver);
+}
 
 function showTab(k) {
   wtnTab = k; window.wtnTab = k;
-  ['home', 'visit', 'tasks', 'lists', 'audits', 'more'].forEach(function (t) {
-    var v = document.getElementById('wtnView-' + t);
-    if (v) v.classList.toggle('on', t === k);
-  });
+  var ops = document.getElementById('wtnOps');
+  var title = document.getElementById('wtnOpsTitle');
+  // Nav highlight
   Array.prototype.forEach.call(document.querySelectorAll('#wtnNav button'), function (b) {
-    b.classList.toggle('on', b.getAttribute('data-tab') === k);
+    if (b.getAttribute('data-tab') === k) b.classList.add('on'); else b.classList.remove('on');
   });
-  if (k === 'home') renderHome();
-  if (k === 'tasks') renderTasks();
-  if (k === 'lists') renderLists();
-  if (k === 'audits' && typeof renderAudits === 'function') renderAudits();
-  if (k === 'more') renderMore();
-  window.scrollTo(0, 0);
-}
-
-function wtnCard(title, inner) {
-  return '<div class="wtnCard"><h3>' + wtnEsc(title) + '</h3>' + inner + '</div>';
-}
-function wtnRenderErr(w, e) {
-  try {
-    if (!w) return;
-    w.innerHTML = '<div class="wtnCard"><h3>Couldn\'t load this tab</h3>' +
-      '<div class="wtnMuted">' + wtnEsc((e && e.message) || String(e)) + '</div>' +
-      '<div style="height:10px"></div><button class="wtnBtn sm" id="wtnReloadApp">Reload app</button></div>';
-    var b = document.getElementById('wtnReloadApp');
-    if (b) b.addEventListener('click', function () { location.reload(); });
-  } catch (e2) {}
-}
-/* No more silent blank tabs: any unhandled render failure shows its message
-   in the active tab instead of an empty screen. */
-window.addEventListener('unhandledrejection', function (e) {
-  try {
-    var w = document.querySelector('.wtnView.on .wtnWrap');
-    if (w && !w.innerHTML.trim()) wtnRenderErr(w, (e && e.reason) || e);
-  } catch (e2) {}
-});
-
-/* ============================== home dashboard ============================== */
-function renderHome() {
-  var w = document.getElementById('wtnWrap-home');
-  Promise.all([Store.all('visits'), Store.all('tasks'), Store.all('templates'), Store.all('instances'), Store.all('activity')]).then(function (r) {
-    var visits = r[0], tasks = r[1], templates = r[2], instances = r[3], acts = r[4];
-    var weekAgo = Date.now() - 7 * 864e5;
-    var visitsWk = visits.filter(function (v) { return v.ts > weekAgo; }).length;
-    var open = tasks.filter(function (t) { return !t.done; });
-    var today = wtnToday();
-    var overdue = open.filter(function (t) { return t.due && t.due < today; }).length;
-    var dueToday = open.filter(function (t) { return t.due === today; }).length;
-    // today's checklist progress
-    var daily = templates.filter(function (t) { return t.freq === 'daily'; });
-    var doneItems = 0, totalItems = 0;
-    daily.forEach(function (tp) {
-      var inst = instances.find(function (i) { return i.templateId === tp.id && i.period === today; });
-      var items = tp.items || [];
-      totalItems += items.length;
-      if (inst && inst.checks) doneItems += items.filter(function (_, ix) { return inst.checks[ix]; }).length;
-    });
-    var pct = totalItems ? Math.round(doneItems / totalItems * 100) : 0;
-    acts.sort(function (a, b) { return b.ts - a.ts; });
-    var feed = acts.slice(0, 8).map(function (a) {
-      var d = new Date(a.ts);
-      var when = d.toLocaleDateString([], { month: 'numeric', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-      return '<div class="wtnAct">' + wtnEsc(a.text) + '<div class="t">' + when + '</div></div>';
-    }).join('') || '<div class="wtnEmpty">Nothing yet — finish a visit or add a task.</div>';
-
-    w.innerHTML =
-      '<div class="wtnHead"><h2>Dashboard</h2><span class="wtnMuted">' + wtnEsc(new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })) + '</span></div>' +
-      '<div class="wtnGrid2">' +
-      '<div class="wtnStat"><div class="n">' + visitsWk + '</div><div class="l">Visits this week</div></div>' +
-      '<div class="wtnStat"><div class="n">' + open.length + '</div><div class="l">Open tasks</div></div>' +
-      '<div class="wtnStat"><div class="n" style="color:' + (overdue ? '#a1372e' : '#18211b') + '">' + overdue + '</div><div class="l">Overdue</div></div>' +
-      '<div class="wtnStat"><div class="n">' + dueToday + '</div><div class="l">Due today</div></div>' +
-      '</div><div style="height:10px"></div>' +
-      wtnCard("Today's checklists", '<div class="wtnRow"><div class="wtnGrow"><div class="wtnBar"><div style="width:' + pct + '%"></div></div></div><b>' + pct + '%</b></div>' +
-        '<div class="wtnMuted">' + doneItems + ' of ' + totalItems + ' items across ' + daily.length + ' daily checklist(s). Say the word — tap Lists to work them.</div>') +
-      wtnCard('Quick actions',
-        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-        '<button class="wtnBtn sm" id="wtnGoVisit">＋ New visit</button>' +
-        '<button class="wtnBtn sm ghost" id="wtnGoTask">＋ Task</button>' +
-        '<button class="wtnBtn sm ghost" id="wtnGoList">☰ Checklists</button>' +
-        '</div>') +
-      wtnCard('Recent activity', feed);
-    document.getElementById('wtnGoVisit').addEventListener('click', function () { showTab('visit'); });
-    document.getElementById('wtnGoTask').addEventListener('click', function () { showTab('tasks'); setTimeout(function(){ var f = document.getElementById('wtnTaskTitle'); if (f) f.focus(); }, 50); });
-    document.getElementById('wtnGoList').addEventListener('click', function () { showTab('lists'); });
-  }).catch(function (e) { wtnRenderErr(w, e); });
-}
-
-/* ============================== tasks ============================== */
-var wtnTaskFilter = 'open';
-var wtnTaskSearch = '';
-
-function taskBucket(t) {
-  if (t.done) return 'done';
-  var today = wtnToday();
-  if (!t.due) return 'nodate';
-  if (t.due < today) return 'overdue';
-  if (t.due === today) return 'today';
-  var d = new Date(t.due + 'T12:00:00').getTime();
-  if (d - Date.now() < 7 * 864e5) return 'week';
-  return 'later';
-}
-
-function renderTasks() {
-  var w = document.getElementById('wtnWrap-tasks');
-  Store.all('tasks').then(function (tasks) {
-    Store.all('locations').then(function (locs) {
-      var locName = {};
-      locs.forEach(function (l) { locName[l.id] = l.name; });
-      var counts = { open: 0, overdue: 0, today: 0, week: 0, done: 0 };
-      tasks.forEach(function (t) {
-        var b = taskBucket(t);
-        if (b === 'done') counts.done++;
-        else { counts.open++; if (b === 'overdue') counts.overdue++; else if (b === 'today') counts.today++; else if (b === 'week') counts.week++; }
-      });
-      function chip(k, label, n) {
-        return '<button class="wtnChip' + (wtnTaskFilter === k ? ' on' : '') + '" data-f="' + k + '">' + label + (n !== undefined ? ' (' + n + ')' : '') + '</button>';
-      }
-      var list = tasks.filter(function (t) {
-        var b = taskBucket(t), f = wtnTaskFilter;
-        if (f === 'open' && b === 'done') return false;
-        if (f === 'overdue' && b !== 'overdue') return false;
-        if (f === 'today' && b !== 'today') return false;
-        if (f === 'week' && !(b === 'today' || b === 'week')) return false;
-        if (f === 'done' && b !== 'done') return false;
-        if (wtnTaskSearch && (t.title + ' ' + (t.section || '')).toLowerCase().indexOf(wtnTaskSearch) < 0) return false;
-        return true;
-      });
-      list.sort(function (a, b) {
-        if (!!a.done !== !!b.done) return a.done ? 1 : -1;
-        return (a.due || '9999') < (b.due || '9999') ? -1 : 1;
-      });
-      var items = list.map(function (t) {
-        var b = taskBucket(t);
-        var badge = b === 'overdue' ? '<span class="wtnBadge over">Overdue</span>'
-          : b === 'today' ? '<span class="wtnBadge today">Due today</span>'
-          : b === 'week' ? '<span class="wtnBadge week">This week</span>'
-          : b === 'done' ? '<span class="wtnBadge doneb">Done</span>'
-          : t.due ? '<span class="wtnBadge week">' + wtnEsc(wtnFmtDate(t.due)) + '</span>' : '';
-        var loc = t.locationId && locName[t.locationId] ? '<span class="wtnBadge loc">' + wtnEsc(locName[t.locationId]) + '</span>'
-          : t.locationName ? '<span class="wtnBadge loc">' + wtnEsc(t.locationName) + '</span>' : '';
-        var sec = t.section ? '<span class="wtnMuted"> · ' + wtnEsc(t.section) + '</span>' : '';
-        return '<div class="wtnTask"><button class="wtnCb' + (t.done ? ' done' : '') + '" data-id="' + t.id + '">' + (t.done ? '✓' : '') + '</button>' +
-          '<div class="wtnGrow"><div class="wtnTaskTitle' + (t.done ? ' done' : '') + '">' + wtnEsc(t.title) + '</div>' +
-          '<div>' + badge + loc + sec + '</div></div>' +
-          '<button class="wtnBtn sm danger" data-del="' + t.id + '">✕</button></div>';
-      }).join('') || '<div class="wtnEmpty">No tasks here. Add one below — or say "add task …" while dictating a visit.</div>';
-
-      var locOpts = '<option value="">No location</option>' + locs.map(function (l) { return '<option value="' + l.id + '">' + wtnEsc(l.name) + '</option>'; }).join('');
-      w.innerHTML =
-        '<div class="wtnHead"><h2>Tasks</h2></div>' +
-        '<div class="wtnCard"><input class="wtnInp" id="wtnTaskSearch" placeholder="Search tasks…" value="' + wtnEsc(wtnTaskSearch) + '">' +
-        '<div class="wtnChips">' + chip('open', 'Open', counts.open) + chip('overdue', 'Overdue', counts.overdue) + chip('today', 'Today', counts.today) + chip('week', 'This week', counts.week) + chip('done', 'Done', counts.done) + chip('all', 'All') + '</div>' +
-        '<div id="wtnTaskList">' + items + '</div></div>' +
-        wtnCard('Add task',
-          '<input class="wtnInp" id="wtnTaskTitle" placeholder="Task title">' +
-          '<div class="wtnLbl">Location</div><select class="wtnSel" id="wtnTaskLoc">' + locOpts + '</select>' +
-          '<div class="wtnGrid2"><div><div class="wtnLbl">Due date</div><input class="wtnInp" type="date" id="wtnTaskDue"></div>' +
-          '<div><div class="wtnLbl">Section</div><select class="wtnSel" id="wtnTaskSec">' + sections.map(function (s) { return '<option>' + wtnEsc(s) + '</option>'; }).join('') + '</select></div></div>' +
-          '<div style="height:10px"></div><button class="wtnBtn" id="wtnTaskAdd" style="width:100%">Add task</button>' +
-          '<div class="wtnMuted" style="margin-top:8px">Tip: while dictating a visit, say "add task" followed by the task — it lands here automatically.</div>');
-
-      Array.prototype.forEach.call(w.querySelectorAll('[data-f]'), function (c) {
-        c.addEventListener('click', function () { wtnTaskFilter = c.getAttribute('data-f'); renderTasks(); });
-      });
-      var si = document.getElementById('wtnTaskSearch');
-      si.addEventListener('input', function () { wtnTaskSearch = si.value.trim().toLowerCase(); renderTasks(); var nsi = document.getElementById('wtnTaskSearch'); nsi.focus(); nsi.setSelectionRange(nsi.value.length, nsi.value.length); });
-      Array.prototype.forEach.call(w.querySelectorAll('.wtnCb'), function (b) {
-        b.addEventListener('click', function () {
-          var t = tasks.find(function (x) { return x.id === b.getAttribute('data-id'); });
-          if (!t) return;
-          t.done = !t.done; t.doneAt = t.done ? Date.now() : null;
-          Store.put('tasks', t).then(function () {
-            logActivity('task', (t.done ? 'Task done: ' : 'Task reopened: ') + t.title);
-            renderTasks();
-          });
-        });
-      });
-      Array.prototype.forEach.call(w.querySelectorAll('[data-del]'), function (b) {
-        b.addEventListener('click', function () {
-          if (!window.confirm('Delete this task?')) return;
-          Store.del('tasks', b.getAttribute('data-del')).then(renderTasks);
-        });
-      });
-      document.getElementById('wtnTaskAdd').addEventListener('click', function () {
-        var title = document.getElementById('wtnTaskTitle').value.trim();
-        if (!title) { toast('Give the task a title'); return; }
-        var lid = document.getElementById('wtnTaskLoc').value;
-        var t = {
-          id: wtnUid('t'), title: title,
-          locationId: lid || null, locationName: lid ? locName[lid] : '',
-          section: document.getElementById('wtnTaskSec').value,
-          due: document.getElementById('wtnTaskDue').value || '',
-          done: false, createdAt: Date.now()
-        };
-        Store.put('tasks', t).then(function () {
-          logActivity('task', 'Task added: ' + title);
-          toast('Task added');
-          renderTasks();
-        });
-      });
-    });
-  });
-}
-
-function createTaskFromVoice(title) {
-  title = (title || '').trim();
-  if (!title) return;
-  var locInput = document.getElementById('location');
-  var t = {
-    id: wtnUid('t'), title: title,
-    locationId: currentLocationId || null,
-    locationName: locInput ? locInput.value.trim() : '',
-    section: currentSection, due: '', done: false, createdAt: Date.now()
-  };
-  Store.put('tasks', t).then(function () {
-    logActivity('task', 'Task added by voice: ' + title);
-    toast('Task added: ' + title);
-  });
-}
-
-/* ============================== recurring checklists ============================== */
-var wtnListFreq = 'daily';
-
-function wtnPeriodKey(freq, d) {
-  d = d || new Date();
-  var y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
-  if (freq === 'daily') return y + '-' + m + '-' + day;
-  if (freq === 'weekly') {
-    var t = new Date(d); var dow = (t.getDay() + 6) % 7;
-    t.setDate(t.getDate() - dow);
-    var ty = t.getFullYear(), tm = String(t.getMonth() + 1).padStart(2, '0'), td = String(t.getDate()).padStart(2, '0');
-    return ty + '-W' + tm + td;
-  }
-  return y + '-' + m;
-}
-function wtnPeriodLabel(freq, key) {
-  if (freq === 'daily') return wtnFmtDate(key);
-  if (freq === 'weekly') return 'Week of ' + key.slice(5, 7).replace(/^0/, '') + '/' + key.slice(7).replace(/^0/, '');
-  return key.slice(0, 4) + '-' + key.slice(5).replace(/^0/, '');
-}
-function wtnPastPeriods(freq, n) {
-  var out = [], d = new Date();
-  for (var i = 0; i < n; i++) {
-    out.push(wtnPeriodKey(freq, d));
-    if (freq === 'daily') d.setDate(d.getDate() - 1);
-    else if (freq === 'weekly') d.setDate(d.getDate() - 7);
-    else d.setMonth(d.getMonth() - 1);
-  }
-  return out;
-}
-
-function renderLists() {
-  var w = document.getElementById('wtnWrap-lists');
-  Promise.all([Store.all('templates'), Store.all('instances')]).then(function (r) {
-    var templates = r[0], instances = r[1];
-    var freqs = ['daily', 'weekly', 'monthly'];
-    var chips = freqs.map(function (f) {
-      return '<button class="wtnChip' + (wtnListFreq === f ? ' on' : '') + '" data-lf="' + f + '">' + f[0].toUpperCase() + f.slice(1) + '</button>';
-    }).join('');
-    var tpls = templates.filter(function (t) { return t.freq === wtnListFreq; });
-    var todayKey = wtnPeriodKey(wtnListFreq);
-    var cards = tpls.map(function (tp) {
-      var inst = instances.find(function (i) { return i.templateId === tp.id && i.period === todayKey; });
-      var checks = (inst && inst.checks) || {};
-      var items = tp.items || [];
-      var done = items.filter(function (_, ix) { return checks[ix]; }).length;
-      var pct = items.length ? Math.round(done / items.length * 100) : 0;
-      // history dots
-      var periods = wtnPastPeriods(wtnListFreq, 7);
-      var dots = periods.map(function (p) {
-        var ins = instances.find(function (i) { return i.templateId === tp.id && i.period === p; });
-        var c = 0;
-        if (ins && ins.checks) c = items.filter(function (_, ix) { return ins.checks[ix]; }).length;
-        var cls = c === items.length && items.length ? 'full' : c > 0 ? 'part' : '';
-        var lbl = wtnPeriodLabel(wtnListFreq, p);
-        return '<div class="wtnDot ' + cls + '" title="' + wtnEsc(lbl) + ': ' + c + '/' + items.length + '">' + (c === items.length && items.length ? '✓' : c) + '</div>';
-      }).join('');
-      var itemHtml = items.map(function (it, ix) {
-        var on = !!checks[ix];
-        return '<div class="wtnItem"><button class="wtnCb' + (on ? ' done' : '') + '" data-tp="' + tp.id + '" data-ix="' + ix + '">' + (on ? '✓' : '') + '</button><div class="wtnGrow' + (on ? ' done' : '') + '">' + wtnEsc(it) + '</div></div>';
-      }).join('');
-      return '<div class="wtnCard"><div class="wtnRow"><div class="wtnGrow"><h3 style="margin:0">' + wtnEsc(tp.name) + '</h3><div class="wtnMuted">' + wtnEsc(wtnPeriodLabel(wtnListFreq, todayKey)) + ' · ' + done + '/' + items.length + '</div></div>' +
-        '<b>' + pct + '%</b><button class="wtnBtn sm danger" data-tdel="' + tp.id + '">✕</button></div>' +
-        '<div class="wtnBar"><div style="width:' + pct + '%"></div></div>' +
-        '<div style="margin-top:6px">' + itemHtml + '</div>' +
-        '<div class="wtnDayDots">' + dots + '</div></div>';
-    }).join('') || '<div class="wtnEmpty">No ' + wtnListFreq + ' checklists yet.<br>Create one below — e.g. "Daily Store Walk".</div>';
-
-    w.innerHTML =
-      '<div class="wtnHead"><h2>Checklists</h2></div>' +
-      '<div class="wtnChips">' + chips + '</div>' +
-      '<div id="wtnListCards">' + cards + '</div>' +
-      wtnCard('New checklist',
-        '<input class="wtnInp" id="wtnTplName" placeholder="Checklist name">' +
-        '<div class="wtnLbl">Items (one per line)</div><textarea class="wtnInp" id="wtnTplItems" rows="4" placeholder="Lights working&#10;Floors clean&#10;Restrooms stocked"></textarea>' +
-        '<div style="height:10px"></div><button class="wtnBtn" id="wtnTplAdd" style="width:100%">Create ' + wtnListFreq + ' checklist</button>');
-
-    Array.prototype.forEach.call(w.querySelectorAll('[data-lf]'), function (c) {
-      c.addEventListener('click', function () { wtnListFreq = c.getAttribute('data-lf'); renderLists(); });
-    });
-    Array.prototype.forEach.call(w.querySelectorAll('.wtnCb[data-tp]'), function (b) {
-      b.addEventListener('click', function () {
-        var tpId = b.getAttribute('data-tp'), ix = parseInt(b.getAttribute('data-ix'), 10);
-        Store.all('templates').then(function (tps) {
-          var tp = tps.find(function (t) { return t.id === tpId; });
-          if (!tp) return;
-          Store.all('instances').then(function (inss) {
-            var key = wtnPeriodKey(tp.freq);
-            var inst = inss.find(function (i) { return i.templateId === tpId && i.period === key; });
-            if (!inst) inst = { id: wtnUid('i'), templateId: tpId, period: key, checks: {}, updatedAt: Date.now() };
-            inst.checks[ix] = !inst.checks[ix];
-            inst.updatedAt = Date.now();
-            Store.put('instances', inst).then(function () {
-              var items = tp.items || [], done = items.filter(function (_, j) { return inst.checks[j]; }).length;
-              if (done === items.length && items.length) logActivity('list', 'Checklist completed: ' + tp.name);
-              renderLists();
-            });
-          });
-        });
-      });
-    });
-    Array.prototype.forEach.call(w.querySelectorAll('[data-tdel]'), function (b) {
-      b.addEventListener('click', function () {
-        if (!window.confirm('Delete this checklist and its history?')) return;
-        var id = b.getAttribute('data-tdel');
-        Store.del('templates', id).then(function () {
-          Store.all('instances').then(function (inss) {
-            var chain = Promise.resolve();
-            inss.filter(function (i) { return i.templateId === id; }).forEach(function (i) {
-              chain = chain.then(function () { return Store.del('instances', i.id); });
-            });
-            chain.then(renderLists);
-          });
-        });
-      });
-    });
-    document.getElementById('wtnTplAdd').addEventListener('click', function () {
-      var name = document.getElementById('wtnTplName').value.trim();
-      var items = document.getElementById('wtnTplItems').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
-      if (!name) { toast('Name the checklist'); return; }
-      if (!items.length) { toast('Add at least one item'); return; }
-      Store.put('templates', { id: wtnUid('c'), name: name, freq: wtnListFreq, items: items, createdAt: Date.now() }).then(function () {
-        logActivity('list', 'Checklist created: ' + name + ' (' + wtnListFreq + ')');
-        toast('Checklist created');
-        renderLists();
-      });
-    });
-  });
-}
-
-/* ============================== places (locations) ============================== */
-function renderPlacesInto(w) {
-  Store.all('locations').then(function (locs) {
-    locs.sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); });
-    var items = locs.map(function (l) {
-      var sub = [l.address, l.phone, l.manager ? 'Mgr: ' + l.manager : ''].filter(Boolean).join(' · ');
-      return '<div class="wtnTask"><div class="wtnGrow"><div class="wtnTaskTitle">' + wtnEsc(l.name) + '</div>' +
-        (sub ? '<div class="wtnMuted">' + wtnEsc(sub) + '</div>' : '') + '</div>' +
-        '<button class="wtnBtn sm ghost" data-lvisit="' + l.id + '">Visit</button> ' +
-        '<button class="wtnBtn sm danger" data-ldel="' + l.id + '">✕</button></div>';
-    }).join('') || '<div class="wtnEmpty">No locations yet. Add the shops you walk.</div>';
-    w.innerHTML =
-      wtnCard('Locations', '<div id="wtnLocList">' + items + '</div>') +
-      wtnCard('Add location',
-        '<input class="wtnInp" id="wtnLocName" placeholder="Name (e.g. 177 - TA Savannah)">' +
-        '<div class="wtnLbl">Address</div><input class="wtnInp" id="wtnLocAddr" placeholder="Street, City">' +
-        '<div class="wtnGrid2"><div><div class="wtnLbl">Phone</div><input class="wtnInp" id="wtnLocPhone" placeholder="Phone"></div>' +
-        '<div><div class="wtnLbl">Email</div><input class="wtnInp" id="wtnLocEmail" placeholder="Email"></div></div>' +
-        '<div class="wtnLbl">Manager</div><input class="wtnInp" id="wtnLocMgr" placeholder="Manager name">' +
-        '<div style="height:10px"></div><button class="wtnBtn" id="wtnLocAdd" style="width:100%">Add location</button>');
-    Array.prototype.forEach.call(w.querySelectorAll('[data-ldel]'), function (b) {
-      b.addEventListener('click', function () {
-        if (!window.confirm('Delete this location?')) return;
-        Store.del('locations', b.getAttribute('data-ldel')).then(function () { renderPlacesInto(w); });
-      });
-    });
-    Array.prototype.forEach.call(w.querySelectorAll('[data-lvisit]'), function (b) {
-      b.addEventListener('click', function () {
-        var l = locs.find(function (x) { return x.id === b.getAttribute('data-lvisit'); });
-        if (!l) return;
-        setVisitLocation(l.id, l.name);
-        showTab('visit');
-        toast('Visit started: ' + l.name);
-      });
-    });
-    document.getElementById('wtnLocAdd').addEventListener('click', function () {
-      var name = document.getElementById('wtnLocName').value.trim();
-      if (!name) { toast('Name the location'); return; }
-      Store.put('locations', {
-        id: wtnUid('l'), name: name,
-        address: document.getElementById('wtnLocAddr').value.trim(),
-        phone: document.getElementById('wtnLocPhone').value.trim(),
-        email: document.getElementById('wtnLocEmail').value.trim(),
-        manager: document.getElementById('wtnLocMgr').value.trim(),
-        createdAt: Date.now()
-      }).then(function () {
-        logActivity('location', 'Location added: ' + name);
-        toast('Location added');
-        renderPlacesInto(w);
-        refreshLocationSelect();
-      });
-    });
-  });
-}
-
-function setVisitLocation(id, name) {
-  currentLocationId = id || null;
-  var inp = document.getElementById('location');
-  if (inp) inp.value = name || '';
-  var sel = document.getElementById('wtnLocSelect');
-  if (sel) sel.value = id || '';
-}
-
-function refreshLocationSelect() {
-  var sel = document.getElementById('wtnLocSelect');
-  if (!sel) return;
-  Store.all('locations').then(function (locs) {
-    locs.sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); });
-    var cur = sel.value;
-    sel.innerHTML = '<option value="">— pick a saved location —</option>' + locs.map(function (l) {
-      return '<option value="' + l.id + '">' + wtnEsc(l.name) + '</option>';
-    }).join('');
-    sel.value = cur;
-  });
-}
-
-function injectLocationSelect() {
-  var inp = document.getElementById('location');
-  if (!inp || document.getElementById('wtnLocSelect')) return;
-  var sel = document.createElement('select');
-  sel.id = 'wtnLocSelect';
-  sel.className = 'wtnSel';
-  sel.style.marginTop = '6px';
-  sel.innerHTML = '<option value="">— pick a saved location —</option>';
-  sel.addEventListener('change', function () {
-    var id = sel.value;
-    if (!id) { currentLocationId = null; return; }
-    Store.all('locations').then(function (locs) {
-      var l = locs.find(function (x) { return x.id === id; });
-      if (l) setVisitLocation(l.id, l.name);
-    });
-  });
-  inp.parentNode.insertBefore(sel, inp.nextSibling);
-  // keep in sync if he types a custom name
-  inp.addEventListener('input', function () {
-    if (!inp.value.trim()) { currentLocationId = null; if (sel.value) sel.value = ''; }
-  });
-  refreshLocationSelect();
-}
-
-/* ============================== more tab ============================== */
-function renderMore() {
-  var w = document.getElementById('wtnWrap-more');
-  w.innerHTML =
-    '<div class="wtnHead"><h2>More</h2></div>' +
-    '<div id="wtnMoreSync"></div>' +
-    '<div id="wtnMorePlaces"></div>' +
-    '<div class="wtnCard"><h3>Visit history</h3><div id="wtnHistList"></div></div>' +
-    '<div class="wtnCard"><h3>Activity</h3><div id="wtnActList"></div></div>' +
-    '<div class="wtnCard"><h3>Backup &amp; restore</h3>' +
-    '<div class="wtnMuted" style="margin-bottom:8px">Everything lives on this phone. Export a backup regularly. (Photos are excluded from backups — they stay in your downloaded visit reports.)</div>' +
-    '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="wtnBtn sm" id="wtnBackup">Export backup</button>' +
-    '<button class="wtnBtn sm ghost" id="wtnRestoreBtn">Restore backup</button>' +
-    '<input type="file" id="wtnRestoreFile" accept="application/json,.json" style="display:none"></div></div>' +
-    '<div class="wtnCard"><h3>AI summarize</h3><div class="wtnMuted" style="margin-bottom:8px">Your Groq key stays on this phone and is only used when you tap AI summarize.</div>' +
-    '<button class="wtnBtn sm ghost" id="wtnAiSettings">Groq key settings</button></div>';
-  renderPlacesInto(document.getElementById('wtnMorePlaces'));
-  if (typeof renderSyncInto === 'function') renderSyncInto(document.getElementById('wtnMoreSync'));
-  renderHistoryInto(document.getElementById('wtnHistList'));
-  renderActivityInto(document.getElementById('wtnActList'));
-  document.getElementById('wtnAiSettings').addEventListener('click', function () { var s = el('settingsOpen'); if (s) s.click(); });
-  document.getElementById('wtnBackup').addEventListener('click', exportBackup);
-  document.getElementById('wtnRestoreBtn').addEventListener('click', function () { document.getElementById('wtnRestoreFile').click(); });
-  document.getElementById('wtnRestoreFile').addEventListener('change', importBackup);
-}
-
-function renderHistoryInto(elm) {
-  Store.all('visits').then(function (vs) {
-    vs.sort(function (a, b) { return b.ts - a.ts; });
-    elm.innerHTML = vs.map(function (v) {
-      var when = new Date(v.ts).toLocaleDateString([], { month: 'numeric', day: 'numeric', year: 'numeric' });
-      var sub = [v.location, ((v.photos || []).length) + ' photos'].filter(Boolean).join(' · ');
-      return '<div class="wtnTask"><div class="wtnGrow"><div class="wtnTaskTitle">' + wtnEsc(when) + '</div>' +
-        '<div class="wtnMuted">' + wtnEsc(sub) + '</div>' +
-        '<div id="wtn-hd-' + v.id + '" style="display:none"></div></div>' +
-        '<button class="wtnBtn sm ghost" data-hv="' + v.id + '">View</button></div>';
-    }).join('') || '<div class="wtnEmpty">No finalized visits yet. Build a draft on the Visit tab and it lands here.</div>';
-    Array.prototype.forEach.call(elm.querySelectorAll('[data-hv]'), function (b) {
-      b.addEventListener('click', function () {
-        var v = vs.find(function (x) { return x.id === b.getAttribute('data-hv'); });
-        if (!v) return;
-        var d = document.getElementById('wtn-hd-' + v.id);
-        if (d.style.display === 'none') {
-          var secs = sections.map(function (s) {
-            var txt = (v.notes && v.notes[s]) || 'No items noted.';
-            var rate = v.ratings && v.ratings[s];
-            var rb = rate ? ' <span class="wtnBadge ' + (rate === 'good' ? 'week' : rate === 'attention' ? 'today' : 'over') + '">' + wtnEsc(rate) + '</span>' : '';
-            return '<div style="margin-top:8px"><b>' + wtnEsc(s) + '</b>' + rb + '<div class="wtnMuted">' + wtnEsc(txt) + '</div></div>';
-          }).join('');
-          var ph = (v.photos && v.photos.length) ? '<div class="wtnLbl">Photos</div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">' +
-            v.photos.map(function (p) { return p.data ? '<img src="' + p.data + '" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px">' : ''; }).join('') + '</div>' : '';
-          d.innerHTML = secs + ph +
-            '<div style="margin-top:10px"><button class="wtnBtn sm" data-hdl="' + v.id + '">Download report</button></div>';
-          d.style.display = 'block';
-          b.textContent = 'Hide';
-          var dl = d.querySelector('[data-hdl]');
-          if (dl) dl.addEventListener('click', function () { downloadSavedVisit(v); });
-        } else {
-          d.style.display = 'none';
-          b.textContent = 'View';
-        }
-      });
-    });
-  });
-}
-
-function downloadSavedVisit(v) {
-  var photoMarkup = (v.photos && v.photos.length) ? "<h2>Visit photos</h2><div class='photos'>" + v.photos.map(function (p) {
-    return p.data ? "<figure><img src='" + p.data + "' alt='Walkthrough photo'><figcaption>" + escapeHtml(p.section) + "</figcaption></figure>" : '';
-  }).join('') + '</div>' : '';
-  var draft = v.draft || {};
-  var html = "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width'><title>Visit Walkthrough</title><style>body{font:16px/1.55 Arial,sans-serif;color:#172019;max-width:850px;margin:40px auto;padding:0 24px}h1,h2{font-family:Georgia,serif}header{border-bottom:3px solid #175f43;padding-bottom:18px;margin-bottom:28px}.meta{color:#526057}section{border-top:1px solid #d8ded8;padding:18px 0}.photos{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}figure{margin:0}img{width:100%;height:260px;object-fit:cover}figcaption{padding:6px 0;color:#526057}@media(max-width:600px){.photos{grid-template-columns:1fr}}@media print{body{margin:0;max-width:none}}</style></head><body><header><h1>Visit Walkthrough</h1><div class='meta'>" +
-    (v.location ? "<div><strong>Location:</strong> " + escapeHtml(v.location) + '</div>' : '') +
-    (v.visitor ? "<div><strong>Visited by:</strong> " + escapeHtml(v.visitor) + '</div>' : '') +
-    "<div><strong>Date:</strong> " + escapeHtml(v.date || '') + '</div></div></header>' +
-    sections.map(function (s) { return '<section><h2>' + escapeHtml(s) + '</h2><p>' + escapeHtml(draft[s] || 'No items noted.') + '</p></section>'; }).join('') +
-    photoMarkup + '</body></html>';
-  var fname = 'visit-walkthrough-' + (v.date || wtnToday()) + '.html';
-  if (window.__wtnSendReport) { window.__wtnSendReport(html, fname); return; }
-  var blob = new Blob([html], { type: 'text/html' });
-  var a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = fname;
-  document.body.appendChild(a); a.click(); a.remove();
-  toast('Report downloaded');
-}
-
-function renderActivity() { var e = document.getElementById('wtnActList'); if (e) renderActivityInto(e); }
-function renderActivityInto(elm) {
-  Store.all('activity').then(function (rows) {
-    rows.sort(function (a, b) { return b.ts - a.ts; });
-    elm.innerHTML = rows.slice(0, 60).map(function (a) {
-      var d = new Date(a.ts);
-      var when = d.toLocaleDateString([], { month: 'numeric', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-      return '<div class="wtnAct">' + wtnEsc(a.text) + '<div class="t">' + when + '</div></div>';
-    }).join('') || '<div class="wtnEmpty">Nothing yet.</div>';
-  });
-}
-
-function exportBackup() {
-  Store.dump().then(function (data) {
-    var clean = Store.stripPhotos(JSON.parse(JSON.stringify(data)));
-    var json = JSON.stringify({ app: 'walkthrough-ops', v: 1, exportedAt: Date.now(), data: clean });
-    var fname = 'walkthrough-backup-' + wtnToday() + '.json';
-    if (window.NativeReport && window.NativeReport.beginWithMime) {
-      var CHUNK = 400 * 1024, total = Math.ceil(json.length / CHUNK), i;
-      window.NativeReport.beginWithMime(fname, 'application/json', total);
-      for (i = 0; i < total; i++) window.NativeReport.chunk(json.substring(i * CHUNK, (i + 1) * CHUNK));
-      window.NativeReport.end();
-      toast('Backup exported');
-    } else {
-      var blob = new Blob([json], { type: 'application/json' });
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = fname;
-      document.body.appendChild(a); a.click(); a.remove();
-      toast('Backup exported');
-    }
-  });
-}
-
-function importBackup(e) {
-  var f = e.target.files && e.target.files[0];
-  if (!f) return;
-  var r = new FileReader();
-  r.onload = function () {
-    try {
-      var obj = JSON.parse(r.result);
-      var data = obj.data || obj;
-      if (!window.confirm('Restore backup? This replaces all current locations, tasks, checklists, visits and activity.')) return;
-      var tables = ['locations', 'tasks', 'templates', 'instances', 'visits', 'activity'];
-      var chain = Promise.resolve();
-      tables.forEach(function (t) {
-        chain = chain.then(function () { return Store.clear(t); }).then(function () {
-          var rows = data[t] || {};
-          var ids = Object.keys(rows), c2 = Promise.resolve();
-          ids.forEach(function (id) { c2 = c2.then(function () { return Store.put(t, rows[id]); }); });
-          return c2;
-        });
-      });
-      chain.then(function () { toast('Backup restored'); logActivity('backup', 'Backup restored'); renderMore(); });
-    } catch (err) { toast('Could not read that backup file'); }
-  };
-  r.readAsText(f);
-  e.target.value = '';
-}
-
-/* ============================== visit integration ============================== */
-/* Per-section condition rating */
-function injectRatings() {
-  var tabsEl = document.getElementById('tabs');
-  if (!tabsEl || document.getElementById('wtnRateRow')) return;
-  var row = document.createElement('div');
-  row.id = 'wtnRateRow';
-  row.className = 'wtnRateRow';
-  row.innerHTML = '<span class="wtnMuted">Condition:</span>' +
-    '<button class="wtnRate" data-r="good">Good</button>' +
-    '<button class="wtnRate" data-r="attention">Needs attention</button>' +
-    '<button class="wtnRate" data-r="critical">Critical</button>';
-  tabsEl.parentNode.insertBefore(row, tabsEl.nextSibling);
-  Array.prototype.forEach.call(row.querySelectorAll('.wtnRate'), function (b) {
-    b.addEventListener('click', function () {
-      var r = b.getAttribute('data-r');
-      if (wtnRatings[currentSection] === r) delete wtnRatings[currentSection];
-      else wtnRatings[currentSection] = r;
-      renderRatings();
-    });
-  });
-  tabsEl.addEventListener('click', function () { setTimeout(renderRatings, 0); });
-  renderRatings();
-}
-function renderRatings() {
-  var row = document.getElementById('wtnRateRow');
-  if (!row) return;
-  var cur = wtnRatings[currentSection];
-  Array.prototype.forEach.call(row.querySelectorAll('.wtnRate'), function (b) {
-    var r = b.getAttribute('data-r');
-    b.className = 'wtnRate' + (cur === r ? (r === 'good' ? ' on-g' : r === 'attention' ? ' on-a' : ' on-c') : '');
-  });
-}
-
-/* Save every finalized draft as a visit record */
-var _renderDraft = renderDraft;
-renderDraft = function (result) {
-  _renderDraft(result);
-  try { saveVisitRecord(result); } catch (e) {}
-};
-function saveVisitRecord(draft) {
-  try { notes[currentSection] = notesArea.value; } catch (e) {}
-  var cleanNotes = {};
-  sections.forEach(function (s) { cleanNotes[s] = notes[s] || ''; });
-  var rec = {
-    id: wtnUid('v'), ts: Date.now(), date: wtnToday(),
-    location: (document.getElementById('location') || {}).value || '',
-    locationId: currentLocationId || null,
-    visitor: (document.getElementById('visitor') || {}).value || '',
-    notes: cleanNotes,
-    ratings: JSON.parse(JSON.stringify(wtnRatings)),
-    photos: photos.map(function (p) { return { data: p.data, section: p.section, name: p.name }; }),
-    draft: draft
-  };
-  Store.put('visits', rec).then(function () {
-    logActivity('visit', 'Visit finalized' + (rec.location ? ' at ' + rec.location : ''));
-    if (typeof window.__wtnVisitSynced === 'function') { try { window.__wtnVisitSynced(rec); } catch (e) {} }
-  });
-}
-
-/* Voice task capture: "add task ..." while dictating */
-var _appendTx = appendTranscript;
-var wtnArmTask = false;
-appendTranscript = function (text) {
-  var txt = (text || '').trim();
-  if (wtnArmTask) {
-    wtnArmTask = false;
-    if (txt) { createTaskFromVoice(txt); return; }
-  }
-  var m = /^(add task|new task)\b\s*:?\s*(.*)$/i.exec(txt);
-  if (m) {
-    if (m[2].trim()) { createTaskFromVoice(m[2].trim()); return; }
-    wtnArmTask = true;
-    toast("What's the task?");
+  if (k === 'visit') {
+    // Show the untouched original page
+    if (ops) ops.classList.remove('open');
     return;
   }
-  _appendTx(text);
-};
+  // Show overlay with the requested section
+  if (ops) ops.classList.add('open');
+  var names = { home: 'Home', tasks: 'Tasks', lists: 'Checklists', audits: 'Audits', more: 'More' };
+  if (title) title.textContent = names[k] || k;
+  ['home', 'tasks', 'lists', 'audits', 'more'].forEach(function (t) {
+    var v = document.getElementById('wtnView-' + t);
+    if (v) v.style.display = (t === k) ? 'block' : 'none';
+  });
+  // Render (each render is self-contained and never throws out)
+  try {
+    if (k === 'home') renderHome();
+    else if (k === 'tasks') renderTasks();
+    else if (k === 'lists') renderLists();
+    else if (k === 'audits') { try { renderAudits(); } catch(e) { try { renderAuditsFallback(); } catch(e2) {} } }
+    else if (k === 'more') renderMore();
+  } catch (e) {}
+  // Scroll overlay to top
+  var body = document.getElementById('wtnOpsBody');
+  if (body) body.scrollTop = 0;
+}
+window.showTab = showTab;
+
+/* ============================== home dashboard (Phase 4: Zenput visibility) ============================== */
+function renderHome() {
+  var w = document.getElementById('wtnWrap-home');
+  if (!w) return;
+  wtnRefreshLocations();
+  w.innerHTML = '<div class="wtnHead"><h2>Today</h2><div class="wtnMuted">' +
+    new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }) + '</div></div>' +
+    '<div id="wtnDashStats"><p class="wtnMuted">Loading…</p></div>' +
+    '<div class="wtnLbl" style="margin:12px 2px 8px">By location</div>' +
+    '<div id="wtnDashLocs"><p class="wtnMuted">Loading…</p></div>';
+  var today = wtnTodayStr();
+  Promise.all([Store.all('tasks'), Store.all('instances'), Store.all('submissions')]).then(function (r) {
+    var tasks = r[0] || [], insts = r[1] || [], subs = r[2] || [];
+    var open = tasks.filter(function (t) { return !t.done; });
+    var overdue = open.filter(function (t) { return wtnIsOverdue(t.dueDate); });
+    var dueToday = open.filter(function (t) { return wtnIsDueToday(t.dueDate); });
+    var dueLists = (insts || []).filter(function (i) { return i.dueDate === today && !i.completedAt; });
+    var el = document.getElementById('wtnDashStats');
+    if (!el) return;
+    el.innerHTML =
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">' +
+      '<div class="wtnStat"' + (overdue.length ? ' style="border-left:4px solid #b3261e"' : '') + '><div class="wtnStatNum" style="' + (overdue.length ? 'color:#b3261e' : '') + '">' + overdue.length + '</div><div class="wtnStatLbl">Overdue tasks</div></div>' +
+      '<div class="wtnStat"><div class="wtnStatNum">' + dueToday.length + '</div><div class="wtnStatLbl">Due today</div></div>' +
+      '<div class="wtnStat"><div class="wtnStatNum">' + dueLists.length + '</div><div class="wtnStatLbl">Checklists due</div></div>' +
+      '<div class="wtnStat"><div class="wtnStatNum">' + subs.length + '</div><div class="wtnStatLbl">Forms completed</div></div>' +
+      '</div>' +
+      (overdue.length ? '<button class="wtnBtn danger" style="width:100%;margin-top:10px" id="wtnDashOverdue">View overdue (' + overdue.length + ')</button>' : '') +
+      (dueToday.length || dueLists.length ? '<button class="wtnBtn" style="width:100%;margin-top:10px" id="wtnDashToday">Today\u2019s work</button>' : '');
+    var bo = document.getElementById('wtnDashOverdue');
+    if (bo) bo.onclick = function () { wtnTaskFilter = { loc: '', show: 'open' }; showTab('tasks'); };
+    var bt = document.getElementById('wtnDashToday');
+    if (bt) bt.onclick = function () { showTab('tasks'); };
+    // By location
+    var locs = wtnGetLocations();
+    var lel = document.getElementById('wtnDashLocs');
+    if (!lel) return;
+    if (!locs.length) {
+      lel.innerHTML = '<div class="wtnCard"><div class="wtnMuted">No locations yet. Link the app to your console (More tab) to pull your stores.</div></div>';
+      return;
+    }
+    lel.innerHTML = locs.map(function (l) {
+      var lt = tasks.filter(function (t) { return String(t.locationId || '') === String(l.id); });
+      var lopen = lt.filter(function (t) { return !t.done; });
+      var ldone = lt.filter(function (t) { return t.done; });
+      var pct = lt.length ? Math.round(ldone.length / lt.length * 100) : 100;
+      var lod = lopen.filter(function (t) { return wtnIsOverdue(t.dueDate); }).length;
+      return '<div class="wtnLocRow" data-loc="' + wtnEsc(l.id) + '" style="cursor:pointer">' +
+        '<div class="wtnGrow"><div class="wtnTaskTitle">' + wtnEsc(l.name) + '</div>' +
+        '<div class="wtnMuted">' + lopen.length + ' open' + (lod ? ' \u2022 ' + lod + ' overdue' : '') + '</div>' +
+        '<div class="wtnBar"><div class="wtnBarFill" style="width:' + pct + '%"></div></div></div>' +
+        '<div class="wtnStatNum" style="font-size:18px">' + pct + '%</div></div>';
+    }).join('');
+    Array.prototype.forEach.call(lel.querySelectorAll('[data-loc]'), function (row) {
+      row.onclick = function () {
+        wtnTaskFilter = { loc: row.getAttribute('data-loc'), show: 'open' };
+        showTab('tasks');
+      };
+    });
+  });
+}
+window.renderHome = renderHome;
+
+/* ============================== tasks (Phase 1: Zenput-style assignment) ============================== */
+var wtnTaskFilter = { loc: '', show: 'open' }; // show: open | done | all
+function renderTasks() {
+  var w = document.getElementById('wtnWrap-tasks');
+  if (!w) return;
+  wtnRefreshLocations();
+  var locs = wtnGetLocations();
+  w.innerHTML =
+    '<div class="wtnHead"><h2>Tasks</h2></div>' +
+    '<div class="wtnCard"><div class="wtnLbl">Add task</div>' +
+    '<input class="wtnInp" id="wtnTaskTitle" placeholder="What needs doing?">' +
+    '<div style="display:flex;gap:8px;margin-top:8px">' +
+    '<select class="wtnInp" id="wtnTaskLoc" style="flex:1">' + wtnLocationOptions('') + '</select>' +
+    '<select class="wtnInp" id="wtnTaskPrio" style="flex:1">' +
+    PRIOS.map(function (p) { return '<option value="' + p.k + '"' + (p.k === 'normal' ? ' selected' : '') + '>' + p.label + '</option>'; }).join('') +
+    '</select></div>' +
+    '<div style="display:flex;gap:8px;margin-top:8px">' +
+    '<input class="wtnInp" id="wtnTaskWho" placeholder="Assign to (name)" list="wtnPeopleDL" style="flex:1">' +
+    '<datalist id="wtnPeopleDL"></datalist>' +
+    '<input class="wtnInp" id="wtnTaskDue" type="date" style="flex:1">' +
+    '</div>' +
+    '<button class="wtnBtn" id="wtnTaskAdd" style="margin-top:8px;width:100%">Add task</button></div>' +
+    '<div class="wtnCard"><div style="display:flex;gap:8px">' +
+    '<select class="wtnInp" id="wtnTaskFilterLoc" style="flex:1"><option value="">All locations</option>' +
+    locs.map(function (l) { return '<option value="' + wtnEsc(l.id) + '"' + (wtnTaskFilter.loc === String(l.id) ? ' selected' : '') + '>' + wtnEsc(l.name) + '</option>'; }).join('') +
+    '</select>' +
+    '<select class="wtnInp" id="wtnTaskFilterShow" style="flex:1">' +
+    '<option value="open"' + (wtnTaskFilter.show === 'open' ? ' selected' : '') + '>Open</option>' +
+    '<option value="done"' + (wtnTaskFilter.show === 'done' ? ' selected' : '') + '>Done</option>' +
+    '<option value="all"' + (wtnTaskFilter.show === 'all' ? ' selected' : '') + '>All</option>' +
+    '</select></div></div>' +
+    '<div id="wtnTaskList"><p class="wtnMuted">Loading…</p></div>';
+  document.getElementById('wtnTaskAdd').onclick = function () {
+    var title = document.getElementById('wtnTaskTitle').value.trim();
+    if (!title) { toast('Give the task a title'); return; }
+    var locSel = document.getElementById('wtnTaskLoc');
+    var locId = locSel ? locSel.value : '';
+    Store.put('tasks', {
+      id: wtnUid('t'), title: title, done: false,
+      locationId: locId || null, locationName: wtnLocationName(locId),
+      assignee: document.getElementById('wtnTaskWho').value.trim() || null,
+      dueDate: document.getElementById('wtnTaskDue').value || null,
+      priority: document.getElementById('wtnTaskPrio').value || 'normal',
+      createdAt: Date.now()
+    }).then(function () { toast('Task added'); logActivity('task', 'Task added: ' + title); renderTasks(); });
+  };
+  Store.all('people').then(function (rows) {
+    var dl = document.getElementById('wtnPeopleDL');
+    if (dl) dl.innerHTML = (rows || []).map(function (p) { return '<option value="' + wtnEsc(p.name) + '">'; }).join('');
+  });
+  document.getElementById('wtnTaskFilterLoc').onchange = function () { wtnTaskFilter.loc = this.value; renderTasks(); };
+  document.getElementById('wtnTaskFilterShow').onchange = function () { wtnTaskFilter.show = this.value; renderTasks(); };
+  Store.all('tasks').then(function (tasks) {
+    var el = document.getElementById('wtnTaskList');
+    if (!el) return;
+    tasks = tasks || [];
+    // filter
+    if (wtnTaskFilter.show === 'open') tasks = tasks.filter(function (t) { return !t.done; });
+    else if (wtnTaskFilter.show === 'done') tasks = tasks.filter(function (t) { return t.done; });
+    if (wtnTaskFilter.loc) tasks = tasks.filter(function (t) { return String(t.locationId || '') === String(wtnTaskFilter.loc); });
+    // sort: overdue first, then due date, then priority, then newest
+    var prioRank = { urgent: 0, high: 1, normal: 2, low: 3 };
+    tasks.sort(function (a, b) {
+      var ao = !a.done && wtnIsOverdue(a.dueDate), bo = !b.done && wtnIsOverdue(b.dueDate);
+      if (ao !== bo) return ao ? -1 : 1;
+      var ad = a.dueDate || '9999', bd = b.dueDate || '9999';
+      if (ad !== bd) return ad < bd ? -1 : 1;
+      var ap = prioRank[a.priority] != null ? prioRank[a.priority] : 2;
+      var bp = prioRank[b.priority] != null ? prioRank[b.priority] : 2;
+      if (ap !== bp) return ap - bp;
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    });
+    if (!tasks.length) { el.innerHTML = '<div class="wtnEmpty">No tasks here.</div>'; return; }
+    el.innerHTML = tasks.map(function (t) {
+      var badges = [];
+      if (!t.done && wtnIsOverdue(t.dueDate)) badges.push('<span class="wtnBadge overdue">OVERDUE</span>');
+      else if (!t.done && wtnIsDueToday(t.dueDate)) badges.push('<span class="wtnBadge today">DUE TODAY</span>');
+      else if (t.dueDate) badges.push('<span class="wtnBadge">Due ' + wtnEsc(t.dueDate) + '</span>');
+      if (t.priority === 'urgent' || t.priority === 'high') badges.push('<span class="wtnBadge prio">' + wtnEsc(wtnPrioLabel(t.priority)) + '</span>');
+      var meta = [];
+      if (t.locationName) meta.push(wtnEsc(t.locationName));
+      else if (t.locationId) meta.push(wtnEsc(t.locationId));
+      if (t.assignee) meta.push('\u2192 ' + wtnEsc(t.assignee));
+      if (t.source === 'corrective') meta.push('\u26A0 corrective');
+      return '<div class="wtnTask' + (!t.done && wtnIsOverdue(t.dueDate) ? ' overdueRow' : '') + '">' +
+        '<div class="wtnGrow"><div class="wtnTaskTitle' + (t.done ? ' done' : '') + '">' + wtnEsc(t.title) + '</div>' +
+        (meta.length ? '<div class="wtnMuted">' + meta.join(' \u2022 ') + '</div>' : '') +
+        (badges.length ? '<div style="margin-top:4px">' + badges.join(' ') + '</div>' : '') +
+        '</div>' +
+        '<button class="wtnBtn sm' + (t.done ? ' ghost' : '') + '" data-done="' + t.id + '">' + (t.done ? 'Undo' : 'Done') + '</button> ' +
+        '<button class="wtnBtn sm danger" data-del="' + t.id + '">\u2715</button></div>';
+    }).join('');
+    Array.prototype.forEach.call(el.querySelectorAll('[data-done]'), function (b) {
+      b.onclick = function () {
+        Store.all('tasks').then(function (ts) {
+          var t = (ts || []).filter(function (x) { return x.id === b.getAttribute('data-done'); })[0];
+          if (t) {
+            t.done = !t.done;
+            t.completedAt = t.done ? Date.now() : null;
+            Store.put('tasks', t).then(function () {
+              logActivity('task', (t.done ? 'Task done: ' : 'Task reopened: ') + t.title);
+              renderTasks();
+            });
+          }
+        });
+      };
+    });
+    Array.prototype.forEach.call(el.querySelectorAll('[data-del]'), function (b) {
+      b.onclick = function () {
+        if (confirm('Delete this task?')) Store.del('tasks', b.getAttribute('data-del')).then(renderTasks);
+      };
+    });
+  });
+}
+window.renderTasks = renderTasks;
+
+/* ============================== lists ============================== */
+/* ============================== lists (Phase 3: recurring checklists) ============================== */
+var FREQS = [
+  { k: 'once', label: 'One-time' },
+  { k: 'daily', label: 'Daily' },
+  { k: 'weekly', label: 'Weekly' },
+  { k: 'monthly', label: 'Monthly' }
+];
+/* Ensure today's instances exist for recurring templates. Called on init and on Lists open. */
+function wtnEnsureInstances() {
+  var today = wtnTodayStr();
+  return Store.all('templates').then(function (tpls) {
+    return Store.all('instances').then(function (insts) {
+      insts = insts || [];
+      var chain = Promise.resolve();
+      (tpls || []).forEach(function (t) {
+        if (!t.frequency || t.frequency === 'once') return;
+        var exists = insts.some(function (i) { return i.templateId === t.id && i.dueDate === today; });
+        if (!exists) {
+          chain = chain.then(function () {
+            return Store.put('instances', {
+              id: wtnUid('i'), templateId: t.id, templateName: t.name,
+              locationId: t.locationId || null, locationName: t.locationName || null,
+              dueDate: today, items: t.items || [], checks: {},
+              createdAt: Date.now(), completedAt: null
+            });
+          });
+        }
+      });
+      return chain;
+    });
+  }).catch(function () {});
+}
+function renderLists() {
+  var w = document.getElementById('wtnWrap-lists');
+  if (!w) return;
+  wtnRefreshLocations();
+  // Draft items for the builder (in-memory until saved)
+  if (!window.__wtnDraftItems) window.__wtnDraftItems = [];
+  var draft = window.__wtnDraftItems;
+  function drawDraft() {
+    var el = document.getElementById('wtnDraftList');
+    if (!el) return;
+    if (!draft.length) { el.innerHTML = '<p class="wtnMuted">No items yet — add one below.</p>'; return; }
+    el.innerHTML = draft.map(function (it, i) {
+      return '<div class="wtnTask"><div class="wtnGrow"><div class="wtnTaskTitle">' + (i + 1) + '. ' + wtnEsc(it) + '</div></div>' +
+        '<button class="wtnBtn sm danger" data-draftdel="' + i + '">\u2715</button></div>';
+    }).join('');
+    Array.prototype.forEach.call(el.querySelectorAll('[data-draftdel]'), function (b) {
+      b.onclick = function () { draft.splice(parseInt(b.getAttribute('data-draftdel'), 10), 1); drawDraft(); };
+    });
+  }
+  w.innerHTML =
+    '<div class="wtnHead"><h2>Checklists</h2></div>' +
+    '<div id="wtnDueToday"><p class="wtnMuted">Loading…</p></div>' +
+    '<div class="wtnCard"><div class="wtnLbl">New checklist</div>' +
+    '<input class="wtnInp" id="wtnTplName" placeholder="Checklist name">' +
+    '<div class="wtnLbl" style="margin-top:10px">Items</div>' +
+    '<div id="wtnDraftList"></div>' +
+    '<div style="display:flex;gap:8px;margin-top:8px">' +
+    '<input class="wtnInp" id="wtnDraftItem" placeholder="Type an item…" style="flex:1">' +
+    '<button class="wtnBtn" id="wtnDraftAdd">Add</button></div>' +
+    '<div style="display:flex;gap:8px;margin-top:10px">' +
+    '<select class="wtnInp" id="wtnTplFreq" style="flex:1">' +
+    FREQS.map(function (f) { return '<option value="' + f.k + '">' + f.label + '</option>'; }).join('') +
+    '</select>' +
+    '<select class="wtnInp" id="wtnTplLoc" style="flex:1">' + wtnLocationOptions('') + '</select>' +
+    '</div>' +
+    '<button class="wtnBtn" id="wtnTplAdd" style="margin-top:10px;width:100%">Create checklist</button></div>' +
+    '<div class="wtnLbl" style="margin:12px 2px 8px">Templates</div>' +
+    '<div id="wtnTplList"><p class="wtnMuted">Loading…</p></div>';
+  drawDraft();
+  function addDraftItem() {
+    var inp = document.getElementById('wtnDraftItem');
+    var v = inp.value.trim();
+    if (!v) return;
+    draft.push(v);
+    inp.value = '';
+    inp.focus();
+    drawDraft();
+  }
+  document.getElementById('wtnDraftAdd').onclick = addDraftItem;
+  document.getElementById('wtnDraftItem').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); addDraftItem(); }
+  });
+  document.getElementById('wtnTplAdd').onclick = function () {
+    var name = document.getElementById('wtnTplName').value.trim();
+    if (!name) { toast('Name the checklist'); return; }
+    if (!draft.length) { toast('Add at least one item'); return; }
+    var locSel = document.getElementById('wtnTplLoc');
+    var locId = locSel ? locSel.value : '';
+    var items = draft.slice();
+    var editId = window.__wtnEditId || null;
+    var rec = {
+      id: editId || wtnUid('c'), name: name, items: items,
+      frequency: document.getElementById('wtnTplFreq').value || 'once',
+      locationId: locId || null, locationName: wtnLocationName(locId),
+      createdAt: Date.now()
+    };
+    // Preserve original createdAt when editing
+    function doSave() {
+      if (editId) {
+        return Store.all('templates').then(function (ts) {
+          var old = (ts || []).filter(function (x) { return x.id === editId; })[0];
+          if (old && old.createdAt) rec.createdAt = old.createdAt;
+          return Store.put('templates', rec);
+        });
+      }
+      return Store.put('templates', rec);
+    }
+    doSave().then(function () {
+      window.__wtnDraftItems = [];
+      window.__wtnEditId = null;
+      toast(editId ? 'Checklist updated' : 'Checklist created');
+      logActivity('list', (editId ? 'Checklist updated: ' : 'Checklist created: ') + name + ' (' + items.length + ' items)');
+      wtnEnsureInstances().then(renderLists);
+    });
+  };
+  // Due today instances
+  wtnEnsureInstances().then(function () {
+    return Store.all('instances');
+  }).then(function (insts) {
+    var el = document.getElementById('wtnDueToday');
+    if (!el) return;
+    var today = wtnTodayStr();
+    var due = (insts || []).filter(function (i) { return i.dueDate === today; })
+      .sort(function (a, b) { return (a.completedAt ? 1 : 0) - (b.completedAt ? 1 : 0); });
+    if (!due.length) { el.innerHTML = ''; return; }
+    el.innerHTML = '<div class="wtnLbl" style="margin:4px 2px 8px">Due today</div>' + due.map(function (inst) {
+      var total = (inst.items || []).length;
+      var answered = Object.keys(inst.answers || {}).length;
+      var loc = inst.locationName ? ' \u2022 ' + wtnEsc(inst.locationName) : '';
+      var score = inst.completedAt && inst.score != null ? ' \u2022 ' + inst.score + '% pass' : '';
+      return '<div class="wtnCard"><div class="wtnTaskTitle">' + wtnEsc(inst.templateName || 'Checklist') + loc + '</div>' +
+        '<div class="wtnMuted">' + answered + '/' + total + ' answered' + score + '</div>' +
+        '<div class="wtnBar"><div class="wtnBarFill" style="width:' + (total ? Math.round(answered / total * 100) : 0) + '%"></div></div>' +
+        '<button class="wtnBtn sm" style="margin-top:8px" data-open="' + inst.id + '">' +
+        (inst.completedAt ? 'Review' : 'Start') + '</button></div>';
+    }).join('');
+    Array.prototype.forEach.call(el.querySelectorAll('[data-open]'), function (b) {
+      b.onclick = function () { wtnOpenInstance(b.getAttribute('data-open')); };
+    });
+  });
+  // Templates
+  Store.all('templates').then(function (tpls) {
+    var el = document.getElementById('wtnTplList');
+    if (!el) return;
+    tpls = tpls || [];
+    if (!tpls.length) { el.innerHTML = '<div class="wtnEmpty">No checklists yet.</div>'; return; }
+    el.innerHTML = tpls.map(function (t) {
+      var fq = FREQS.filter(function (f) { return f.k === t.frequency; })[0];
+      var meta = (fq ? fq.label : 'One-time') + (t.locationName ? ' \u2022 ' + wtnEsc(t.locationName) : '');
+      return '<div class="wtnCard"><div class="wtnTaskTitle">' + wtnEsc(t.name) + '</div>' +
+        '<div class="wtnMuted">' + meta + ' \u2022 ' + (t.items || []).length + ' items</div>' +
+        '<div style="margin-top:8px;display:flex;gap:8px">' +
+        '<button class="wtnBtn sm" data-edit="' + t.id + '">Edit</button>' +
+        '<button class="wtnBtn sm danger" data-del="' + t.id + '">Delete</button></div></div>';
+    }).join('');
+    Array.prototype.forEach.call(el.querySelectorAll('[data-del]'), function (b) {
+      b.onclick = function () {
+        if (confirm('Delete this checklist template?')) Store.del('templates', b.getAttribute('data-del')).then(renderLists);
+      };
+    });
+    Array.prototype.forEach.call(el.querySelectorAll('[data-edit]'), function (b) {
+      b.onclick = function () {
+        var tid = b.getAttribute('data-edit');
+        Store.all('templates').then(function (ts) {
+          var t = (ts || []).filter(function (x) { return x.id === tid; })[0];
+          if (!t) return;
+          // Load into the builder
+          window.__wtnDraftItems = (t.items || []).slice();
+          window.__wtnEditId = tid;
+          renderLists();
+          setTimeout(function () {
+            var n = document.getElementById('wtnTplName');
+            if (n) { n.value = t.name; n.focus(); }
+            var f = document.getElementById('wtnTplFreq');
+            if (f) f.value = t.frequency || 'once';
+            var l = document.getElementById('wtnTplLoc');
+            if (l && t.locationId) l.value = t.locationId;
+            var btn = document.getElementById('wtnTplAdd');
+            if (btn) btn.textContent = 'Save changes';
+            // Scroll to builder
+            var card = n ? n.closest('.wtnCard') : null;
+            if (card) try { card.scrollIntoView(); } catch (e) {}
+          }, 100);
+        });
+      };
+    });
+  });
+}
+/* Open a checklist instance for filling */
+function wtnOpenInstance(instId) {
+  Store.all('instances').then(function (insts) {
+    var inst = (insts || []).filter(function (i) { return i.id === instId; })[0];
+    if (!inst) return;
+    var w = document.getElementById('wtnWrap-lists');
+    inst.answers = inst.answers || {};
+    function itemHtml(it, idx) {
+      var a = inst.answers[idx];
+      var yesStyle = a === 'yes' ? 'background:#175f43;border-color:#175f43;' : '';
+      var noStyle = a === 'no' ? 'background:#b3261e;border-color:#b3261e;' : '';
+      return '<div class="wtnCard" style="margin-bottom:10px"><div class="wtnTaskTitle" style="margin-bottom:10px">' +
+        wtnEsc(it) + '</div>' +
+        '<div style="display:flex;gap:8px">' +
+        '<button class="wtnBtn sm' + (a === 'yes' ? '' : ' ghost') + '" data-yn="yes" data-idx="' + idx + '" style="flex:1;' + yesStyle + '">Yes</button>' +
+        '<button class="wtnBtn sm' + (a === 'no' ? '' : ' ghost') + '" data-yn="no" data-idx="' + idx + '" style="flex:1;' + noStyle + '">No</button>' +
+        '<button class="wtnBtn sm' + (a === 'na' ? '' : ' ghost') + '" data-yn="na" data-idx="' + idx + '" style="flex:1">N/A</button>' +
+        '</div>' +
+        (a === 'no' ? '<button class="wtnBtn sm danger" data-fix="' + idx + '" style="margin-top:8px;width:100%">\u26A0 Create corrective task</button>' : '') +
+        '</div>';
+    }
+    function drawItems() {
+      var el = document.getElementById('wtnInstItems');
+      if (!el) return;
+      el.innerHTML = (inst.items || []).map(itemHtml).join('');
+      Array.prototype.forEach.call(el.querySelectorAll('[data-yn]'), function (b) {
+        b.onclick = function () {
+          inst.answers[b.getAttribute('data-idx')] = b.getAttribute('data-yn');
+          Store.put('instances', inst).then(drawItems);
+        };
+      });
+      Array.prototype.forEach.call(el.querySelectorAll('[data-fix]'), function (b) {
+        b.onclick = function () { wtnCorrectiveFromChecklist(inst, parseInt(b.getAttribute('data-fix'), 10)); };
+      });
+      var total = (inst.items || []).length;
+      var answered = Object.keys(inst.answers).length;
+      var pel = document.getElementById('wtnInstProg');
+      if (pel) pel.innerHTML = '<div class="wtnMuted">' + answered + '/' + total + ' answered</div>' +
+        '<div class="wtnBar"><div class="wtnBarFill" style="width:' + (total ? Math.round(answered / total * 100) : 0) + '%"></div></div>';
+    }
+    w.innerHTML =
+      '<div class="wtnHead"><h2>' + wtnEsc(inst.templateName || 'Checklist') + '</h2>' +
+      '<button class="wtnBtn sm ghost" id="wtnInstBack">\u2190 Back</button></div>' +
+      (inst.locationName ? '<div class="wtnMuted" style="margin-bottom:8px">' + wtnEsc(inst.locationName) + ' \u2022 ' + wtnEsc(inst.dueDate) + '</div>' : '') +
+      '<div id="wtnInstProg" style="margin-bottom:10px"></div>' +
+      '<div id="wtnInstItems"></div>' +
+      '<button class="wtnBtn" id="wtnInstDone" style="width:100%;margin-bottom:12px">Submit checklist</button>';
+    document.getElementById('wtnInstBack').onclick = renderLists;
+    drawItems();
+    document.getElementById('wtnInstDone').onclick = function () {
+      var total = (inst.items || []).length;
+      var answered = Object.keys(inst.answers).length;
+      if (answered < total) {
+        if (!confirm('Only ' + answered + ' of ' + total + ' answered. Submit anyway?')) return;
+      }
+      var nos = Object.keys(inst.answers).filter(function (k) { return inst.answers[k] === 'no'; }).length;
+      inst.completedAt = Date.now();
+      inst.score = total ? Math.round((total - nos) / total * 100) : 100;
+      Store.put('instances', inst).then(function () {
+        toast('Checklist submitted' + (nos ? ' \u2014 ' + nos + ' issue(s) flagged' : ''));
+        logActivity('list', 'Checklist submitted: ' + (inst.templateName || '') + ' (' + inst.score + '%)');
+        renderLists();
+      });
+    };
+  });
+}
+function wtnCorrectiveFromChecklist(inst, idx) {
+  var itemText = (inst.items || [])[idx] || 'Item';
+  var tomorrow = new Date(Date.now() + 86400000);
+  var due = tomorrow.getFullYear() + '-' + String(tomorrow.getMonth() + 1).padStart(2, '0') + '-' + String(tomorrow.getDate()).padStart(2, '0');
+  Store.put('tasks', {
+    id: wtnUid('t'),
+    title: 'Fix: ' + itemText + ' \u2014 ' + (inst.templateName || 'Checklist'),
+    done: false,
+    locationId: inst.locationId || null, locationName: inst.locationName || null,
+    assignee: null, dueDate: due, priority: 'high',
+    source: 'corrective', checklistRef: inst.id, createdAt: Date.now()
+  }).then(function () {
+    toast('Corrective task created');
+    logActivity('task', 'Corrective task from checklist: ' + itemText);
+  });
+}
+window.renderLists = renderLists;
+
+/* ============================== audits ============================== */
+/* sync.js owns renderAudits (global function). This is a fallback if sync.js
+   didn't load. Completed forms are stored locally in 'submissions'. */
+function renderAuditsFallback() {
+  var w = document.getElementById('wtnWrap-audits');
+  if (!w) return;
+  // Defer to sync.js's implementation if present; it targets wtnWrap-audits
+  if (typeof window.__wtnRenderAudits === 'function') { try { window.__wtnRenderAudits(w); return; } catch (e) {} }
+  if (typeof renderAuditsImpl === 'function') { try { renderAuditsImpl(w); return; } catch (e) {} }
+  // Fallback: not linked message with link to More
+  w.innerHTML = '<div class="wtnHead"><h2>Audits</h2></div>' +
+    '<div class="wtnCard"><div class="wtnTaskTitle">Not linked</div>' +
+    '<div class="wtnMuted" style="margin:8px 0">Connect this app to your SiteWalkNotes Ops console to fill out published audit forms.</div>' +
+    '<button class="wtnBtn" id="wtnGoLink">Connect in More tab</button></div>' +
+    '<div class="wtnCard"><div class="wtnLbl">Completed on this device</div><div id="wtnSubList"><p class="wtnMuted">Loading…</p></div></div>';
+  var gl = document.getElementById('wtnGoLink');
+  if (gl) gl.onclick = function () { showTab('more'); };
+  Store.all('submissions').then(function (subs) {
+    var el = document.getElementById('wtnSubList');
+    if (!el) return;
+    subs = (subs || []).sort(function (a, b) { return (b.ts || 0) - (a.ts || 0); });
+    if (!subs.length) { el.innerHTML = '<p class="wtnMuted">No completed forms yet.</p>'; return; }
+    el.innerHTML = subs.map(function (s) {
+      var d = s.ts ? new Date(s.ts).toLocaleString() : '';
+      return '<div class="wtnTask"><div class="wtnGrow"><div class="wtnTaskTitle">' + wtnEsc(s.formTitle || 'Form') + '</div>' +
+        '<div class="wtnMuted">' + wtnEsc(d) + (s.synced ? '' : ' \u2022 not yet synced') + '</div></div></div>';
+    }).join('');
+  });
+}
+window.renderAuditsFallback = renderAuditsFallback;
+
+/* Called by the audit fill UI (sync.js) after a successful submit, or used directly. */
+function wtnSaveSubmission(formTitle, answers, serverId) {
+  var rec = { id: wtnUid('s'), formTitle: formTitle, answers: answers, ts: Date.now(), synced: !!serverId, serverId: serverId || null };
+  return Store.put('submissions', rec).then(function () {
+    logActivity('audit', 'Form completed: ' + formTitle);
+    return rec;
+  });
+}
+window.wtnSaveSubmission = wtnSaveSubmission;
+
+/* ============================== more ============================== */
+function renderMore() {
+  var w = document.getElementById('wtnWrap-more');
+  if (!w) return;
+  var html = '<div class="wtnHead"><h2>More</h2></div><div id="wtnMoreBody"><p class="wtnMuted">Loading…</p></div>';
+  w.innerHTML = html;
+  var body = document.getElementById('wtnMoreBody');
+  var parts = [];
+  // Server link card (sync.js provides the real UI if present)
+  parts.push('<div class="wtnCard" id="wtnServerCard"><div class="wtnLbl">Server</div><div id="wtnServerBody"><p class="wtnMuted">Loading…</p></div></div>');
+  // Team (people for task assignment)
+  parts.push('<div class="wtnCard"><div class="wtnLbl">Team</div>' +
+    '<div style="display:flex;gap:8px"><input class="wtnInp" id="wtnPersonName" placeholder="Name" style="flex:1">' +
+    '<button class="wtnBtn sm" id="wtnPersonAdd">Add</button></div>' +
+    '<div id="wtnPeopleList" style="margin-top:8px"><p class="wtnMuted">Loading…</p></div></div>');
+  // Activity
+  parts.push('<div class="wtnCard"><div class="wtnLbl">Activity</div><div id="wtnActList"><p class="wtnMuted">Loading…</p></div></div>');
+  // Backup
+  parts.push('<div class="wtnCard"><div class="wtnLbl">Backup</div>' +
+    '<button class="wtnBtn sm" id="wtnBackupBtn">Download backup</button></div>');
+  body.innerHTML = parts.join('');
+  // Server UI from sync.js
+  try {
+    if (typeof window.renderSyncInto === 'function') {
+      var sc = document.getElementById('wtnServerBody');
+      if (sc) window.renderSyncInto(sc);
+    } else {
+      document.getElementById('wtnServerBody').innerHTML = '<p class="wtnMuted">Server link unavailable.</p>';
+    }
+  } catch (e) {}
+  // Team
+  function refreshPeople() {
+    Store.all('people').then(function (rows) {
+      var el = document.getElementById('wtnPeopleList');
+      if (!el) return;
+      rows = rows || [];
+      if (!rows.length) { el.innerHTML = '<p class="wtnMuted">No team members yet.</p>'; return; }
+      el.innerHTML = rows.map(function (p) {
+        return '<div class="wtnTask"><div class="wtnGrow"><div class="wtnTaskTitle">' + wtnEsc(p.name) + '</div></div>' +
+          '<button class="wtnBtn sm danger" data-pdel="' + p.id + '">\u2715</button></div>';
+      }).join('');
+      Array.prototype.forEach.call(el.querySelectorAll('[data-pdel]'), function (b) {
+        b.onclick = function () { Store.del('people', b.getAttribute('data-pdel')).then(refreshPeople); };
+      });
+    });
+  }
+  refreshPeople();
+  document.getElementById('wtnPersonAdd').onclick = function () {
+    var name = document.getElementById('wtnPersonName').value.trim();
+    if (!name) { toast('Enter a name'); return; }
+    Store.put('people', { id: wtnUid('p'), name: name, createdAt: Date.now() }).then(function () {
+      document.getElementById('wtnPersonName').value = '';
+      toast('Added to team');
+      refreshPeople();
+    });
+  };
+  // Activity
+  Store.all('activity').then(function (rows) {
+    var el = document.getElementById('wtnActList');
+    if (!el) return;
+    rows = (rows || []).sort(function (a, b) { return (b.ts || 0) - (a.ts || 0); }).slice(0, 30);
+    if (!rows.length) { el.innerHTML = '<p class="wtnMuted">No activity yet.</p>'; return; }
+    el.innerHTML = rows.map(function (r) {
+      return '<div class="wtnMuted" style="margin-bottom:6px">' + wtnEsc(r.text || '') + '</div>';
+    }).join('');
+  });
+  // Backup
+  var bb = document.getElementById('wtnBackupBtn');
+  if (bb) bb.onclick = function () {
+    var tables = ['tasks', 'templates', 'submissions', 'activity'];
+    var out = {};
+    var chain = Promise.resolve();
+    tables.forEach(function (t) {
+      chain = chain.then(function () { return Store.all(t).then(function (rows) { out[t] = rows; }); });
+    });
+    chain.then(function () {
+      var blob = new Blob([JSON.stringify(out)], { type: 'application/json' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'walkthrough-backup.json';
+      document.body.appendChild(a); a.click(); a.remove();
+      toast('Backup downloaded');
+    });
+  };
+}
+window.renderMore = renderMore;
 
 /* ============================== init ============================== */
-injectLocationSelect();
-injectRatings();
-Store.init().then(function () {
-  refreshLocationSelect();
-  showTab('visit');
-});
+function init() {
+  buildShell();
+  Store.init().then(function () {
+    // Pre-render ops sections so they're ready when the overlay opens
+    try { renderTasks(); } catch (e) {}
+    try { renderLists(); } catch (e) {}
+    try { renderMore(); } catch (e) {}
+    try { renderAudits(); } catch (e) {}
+  });
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
 
-} catch (e) { try { console.log('ops.js failed: ' + e.message); } catch (e2) {} }
+} catch (e) { try { console.log('ops v5 failed: ' + e.message); } catch (e2) {} }
 });
 
 
@@ -1630,7 +1627,7 @@ Store.init().then(function () {
         rec.onerror = function (event) {
           if (event.error === "not-allowed" || event.error === "service-not-allowed") {
             stopRecording();
-            statusCopy.textContent = "Microphone access was blocked. In your device’s Settings app, allow microphone access for Walkthrough Notes, then return and tap Start visit. You can type notes in the meantime.";
+            statusCopy.textContent = "Microphone access was blocked. In your device’s Settings app, allow microphone access for SiteWalkNotes, then return and tap Start visit. You can type notes in the meantime.";
           } else if (event.error !== "no-speech" && event.error !== "aborted") {
             statusCopy.textContent = "Listening paused. Tap Start visit to try again, or continue typing.";
           }

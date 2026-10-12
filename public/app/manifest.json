@@ -1,6 +1,6 @@
 {
-  "name": "Walkthrough Notes",
-  "short_name": "Walkthrough",
+  "name": "SiteWalkNotes",
+  "short_name": "SWN",
   "description": "Voice walkthrough notes, tasks and checklists for site visits.",
   "start_url": "./",
   "scope": "./",

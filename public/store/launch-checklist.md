@@ -1,7 +1,7 @@
-# Walkthrough Notes — Play Store launch checklist
+# SiteWalkNotes — Play Store launch checklist
 
 ## Milo has ready for you
-- [x] Signed AAB (v1.9, versionCode 10): `WalkthroughNotes.aab`
+- [x] Signed AAB (v5.4, versionCode 42, rebranded): `WalkthroughNotes.aab`
 - [x] App icon 512×512
 - [x] Feature graphic 1024×500
 - [x] Privacy policy live: https://walkthrough-notes.onrender.com/privacy/
@@ -9,7 +9,7 @@
 - [x] Data safety answers: see play-listing.md
 
 ## You do in Play Console (https://play.google.com/console)
-1. Create app → name "Walkthrough Notes", package `com.walkthroughnotes.app`
+1. Create app → name "SiteWalkNotes", package `com.walkthroughnotes.app`
 2. Upload the AAB to the Internal testing track first
 3. Store listing: paste the short + full description, upload icon, feature graphic, 2+ phone screenshots
 4. Privacy policy: paste the URL above
