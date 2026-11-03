@@ -18,7 +18,7 @@ ops = open(ops_path, encoding="utf-8").read()
 
 # PWA head tags
 pwa = ('<link rel="manifest" href="manifest.json">'
-       '<meta name="theme-color" content="#175f43">'
+       '<meta name="theme-color" content="#0a0f0d">'
        '<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">'
        '<link rel="apple-touch-icon" href="icon-192.png">'
        '<meta name="mobile-web-app-capable" content="yes">'
